@@ -53,15 +53,13 @@ void SnapcastClient::taskLoop() {
   if (!connected_) {
     if (connectAndHandshake()) {
       connected_ = true;
-    } else {
-      disconnect();
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      return;
     }
+  } else if (readAndDispatchOne()) {
     return;
   }
-  if (!readAndDispatchOne()) {
-    disconnect();
-  }
+  disconnect();
+  std::this_thread::sleep_for(std::chrono::seconds(1));
 }
 
 void SnapcastClient::wakeTask() {
