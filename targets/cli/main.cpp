@@ -1,10 +1,12 @@
 #include <bell/Logger.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +17,7 @@
 #include "snapclient/DspProcessor.h"
 #include "snapclient/JsonFileSettingsStore.h"
 #include "snapclient/SnapcastClient.h"
+#include "snapclient/SnapcastDiscovery.h"
 #include "snapclient/SyncEngine.h"
 
 namespace {
@@ -29,6 +32,33 @@ struct QueuedChunk {
   int64_t serverTimeUs;
   std::vector<int16_t> pcm;
 };
+
+std::optional<snapclient::SnapcastDiscovery::Found> discoverServer(
+    int timeoutMs) {
+  snapclient::SnapcastDiscovery discovery;
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::optional<snapclient::SnapcastDiscovery::Found> found;
+
+  auto startRes = discovery.start(
+      [&](const snapclient::SnapcastDiscovery::Found& f) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!found) {
+          found = f;
+          cv.notify_one();
+        }
+      });
+  if (!startRes) {
+    BELL_LOG(error, "snapcast_test", "mdns browse failed: {}",
+             startRes.error().message());
+    return std::nullopt;
+  }
+
+  std::unique_lock<std::mutex> lock(mutex);
+  cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+             [&] { return found.has_value(); });
+  return found;
+}
 
 // Network receive (SnapcastClient's own task) and playback pacing (this
 // loop) run on separate threads, connected by a queue, so evaluate()'s
@@ -73,8 +103,22 @@ int runSnapcastTest(const std::string& host, uint16_t port,
   size_t corrections = 0;
 
   snapclient::SnapcastClient::Config config;
-  config.host = settings.serverHost().empty() ? host : settings.serverHost();
-  config.port = settings.serverHost().empty() ? port : settings.serverPort();
+  if (!settings.serverHost().empty()) {
+    config.host = settings.serverHost();
+    config.port = settings.serverPort();
+    BELL_LOG(info, kLogTag, "using pinned server setting {}:{}", config.host,
+             config.port);
+  } else if (auto discovered = discoverServer(5000)) {
+    config.host = discovered->host;
+    config.port = discovered->port;
+    BELL_LOG(info, kLogTag, "discovered server via mDNS: {}:{}", config.host,
+             config.port);
+  } else {
+    config.host = host;
+    config.port = port;
+    BELL_LOG(info, kLogTag, "mDNS found nothing, falling back to {}:{}",
+             config.host, config.port);
+  }
   snapclient::SnapcastClient client(config);
 
   client.onServerSettings = [&](const snapclient::ServerSettings& s) {
@@ -113,7 +157,7 @@ int runSnapcastTest(const std::string& host, uint16_t port,
     queue.push_back(std::move(item));
   };
 
-  BELL_LOG(info, kLogTag, "connecting to {}:{}...", host, port);
+  BELL_LOG(info, kLogTag, "connecting to {}:{}...", config.host, config.port);
 
   std::vector<int16_t> scratch;
   const auto testEnd = std::chrono::steady_clock::now() + std::chrono::seconds(15);
