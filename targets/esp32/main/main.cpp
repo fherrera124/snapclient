@@ -5,4 +5,5 @@
 extern "C" void app_main(void) {
   bell::registerDefaultLogger();
   snapclient::scaffoldSelfCheck();
+  snapclient::dspSmokeTest();
 }

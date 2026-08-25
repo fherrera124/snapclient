@@ -5,5 +5,5 @@
 int main() {
   bell::registerDefaultLogger();
   snapclient::scaffoldSelfCheck();
-  return 0;
+  return snapclient::dspSmokeTest() ? 0 : 1;
 }
