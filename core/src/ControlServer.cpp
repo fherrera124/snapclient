@@ -7,6 +7,8 @@
 #include <bell/http/Reader.h>
 #include <bell/http/Writer.h>
 
+#include "snapclient/SettingsUiHtml.h"
+
 namespace snapclient {
 
 ControlServer::ControlServer(ControlSettings& settings)
@@ -19,6 +21,16 @@ bell::Result<> ControlServer::listen(uint16_t port) {
 }
 
 void ControlServer::registerRoutes() {
+  httpServer_.registerGet(
+      "/",
+      [](const std::unique_ptr<bell::http::Reader>& /*request*/,
+        const std::unique_ptr<bell::http::Writer>& response,
+        const std::unordered_map<std::string, std::string>& /*params*/) {
+        (void)response->writeResponseWithBody(
+            200, {{"Content-Type", "text/html; charset=utf-8"}},
+            kSettingsUiHtml);
+      });
+
   httpServer_.registerGet(
       "/api/settings",
       [this](const std::unique_ptr<bell::http::Reader>& /*request*/,
