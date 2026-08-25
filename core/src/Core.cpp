@@ -3,11 +3,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <system_error>
 #include <vector>
 
 #include <bell/Logger.h>
 
+#include "snapclient/ControlSettings.h"
 #include "snapclient/DspProcessor.h"
+#include "snapclient/JsonFileSettingsStore.h"
 
 namespace snapclient {
 
@@ -104,6 +108,54 @@ bool dspSmokeTest() {
   }
 
   return allOk;
+}
+
+bool settingsSmokeTest() {
+  namespace fs = std::filesystem;
+  std::string path =
+      (fs::temp_directory_path() / "snapclient_settings_smoketest.json")
+          .string();
+  std::error_code ec;
+  fs::remove(path, ec);
+
+  bool ok = true;
+
+  {
+    JsonFileSettingsStore store(path);
+    ControlSettings settings(store);
+    ok = settings.applyJson(
+             R"({"server":{"host":"192.168.1.50","port":4444},)"
+             R"("dsp":{"activeFlow":"biamp","flows":{"biamp":)"
+             R"({"freqPrimaryHz":600,"gainPrimaryDb":1,)"
+             R"("freqTertiaryHz":700,"gainTertiaryDb":2}}}})") &&
+         ok;
+    ok = (settings.serverHost() == "192.168.1.50") && ok;
+    ok = (settings.serverPort() == 4444) && ok;
+    ok = (settings.activeFlow() == DspFlow::Biamp) && ok;
+  }
+
+  {
+    // Fresh store/settings against the same file: verifies persistence
+    // across reconstruction.
+    JsonFileSettingsStore store(path);
+    ControlSettings settings(store);
+    ok = (settings.serverHost() == "192.168.1.50") && ok;
+    ok = (settings.serverPort() == 4444) && ok;
+    ok = (settings.activeFlow() == DspFlow::Biamp) && ok;
+    auto params = settings.flowParams(DspFlow::Biamp);
+    ok = (params.freqPrimaryHz == 600.0f) && ok;
+    ok = (params.gainPrimaryDb == 1.0f) && ok;
+
+    ok = !settings.applyJson(R"({"dsp":{"activeFlow":"nope"}})") && ok;
+    ok = !settings.applyJson(R"({"server":{"port":"not-a-number"}})") && ok;
+    ok = (settings.activeFlow() == DspFlow::Biamp) && ok;
+    ok = (settings.serverPort() == 4444) && ok;
+  }
+
+  fs::remove(path, ec);
+
+  BELL_LOG(info, LOG_TAG, "settingsSmokeTest: {}", ok ? "PASS" : "FAIL");
+  return ok;
 }
 
 }  // namespace snapclient

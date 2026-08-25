@@ -9,8 +9,11 @@
 #include <thread>
 #include <vector>
 
+#include "snapclient/ControlServer.h"
+#include "snapclient/ControlSettings.h"
 #include "snapclient/Core.h"
 #include "snapclient/DspProcessor.h"
+#include "snapclient/JsonFileSettingsStore.h"
 #include "snapclient/SnapcastClient.h"
 #include "snapclient/SyncEngine.h"
 
@@ -31,13 +34,36 @@ struct QueuedChunk {
 // loop) run on separate threads, connected by a queue, so evaluate()'s
 // WaitMore decisions can re-check the same chunk against real elapsed time
 // instead of a freshly-arrived one.
-int runSnapcastTest(const std::string& host, uint16_t port) {
+int runSnapcastTest(const std::string& host, uint16_t port,
+                    const std::string& settingsPath, uint16_t controlPort) {
   const char* kLogTag = "snapcast_test";
 
   snapclient::SyncEngine sync;
   snapclient::DspProcessor dsp;
   bell::audio::SampleRate sampleRate = bell::audio::SampleRate::SR_44100HZ;
   int32_t bufferMs = 0;
+
+  snapclient::JsonFileSettingsStore settingsStore(settingsPath);
+  snapclient::ControlSettings settings(settingsStore);
+  snapclient::ControlServer control(settings);
+
+  dsp.switchFlow(settings.activeFlow());
+  dsp.setParams(settings.activeFlow(), settings.flowParams(settings.activeFlow()));
+
+  control.onSettingsChanged = [&] {
+    dsp.switchFlow(settings.activeFlow());
+    dsp.setParams(settings.activeFlow(),
+                  settings.flowParams(settings.activeFlow()));
+    BELL_LOG(info, kLogTag, "settings applied: flow={} freqPrimaryHz={}",
+             static_cast<int>(settings.activeFlow()),
+             settings.flowParams(settings.activeFlow()).freqPrimaryHz);
+  };
+
+  auto controlListenRes = control.listen(controlPort);
+  if (!controlListenRes) {
+    BELL_LOG(error, kLogTag, "control server listen failed: {}",
+             controlListenRes.error().message());
+  }
 
   std::mutex queueMutex;
   std::deque<QueuedChunk> queue;
@@ -47,8 +73,8 @@ int runSnapcastTest(const std::string& host, uint16_t port) {
   size_t corrections = 0;
 
   snapclient::SnapcastClient::Config config;
-  config.host = host;
-  config.port = port;
+  config.host = settings.serverHost().empty() ? host : settings.serverHost();
+  config.port = settings.serverHost().empty() ? port : settings.serverPort();
   snapclient::SnapcastClient client(config);
 
   client.onServerSettings = [&](const snapclient::ServerSettings& s) {
@@ -152,8 +178,21 @@ int main(int argc, char** argv) {
   snapclient::scaffoldSelfCheck();
 
   if (argc >= 4 && std::string(argv[1]) == "--snapcast") {
-    return runSnapcastTest(argv[2], static_cast<uint16_t>(std::stoi(argv[3])));
+    std::string settingsPath = "/tmp/snapclient_settings.json";
+    uint16_t controlPort = 8080;
+    for (int i = 4; i + 1 < argc; i += 2) {
+      std::string flag = argv[i];
+      if (flag == "--settings") {
+        settingsPath = argv[i + 1];
+      } else if (flag == "--control-port") {
+        controlPort = static_cast<uint16_t>(std::stoi(argv[i + 1]));
+      }
+    }
+    return runSnapcastTest(argv[2], static_cast<uint16_t>(std::stoi(argv[3])),
+                           settingsPath, controlPort);
   }
 
-  return snapclient::dspSmokeTest() ? 0 : 1;
+  bool ok = snapclient::dspSmokeTest();
+  ok = snapclient::settingsSmokeTest() && ok;
+  return ok ? 0 : 1;
 }

@@ -1,0 +1,231 @@
+#include "snapclient/ControlSettings.h"
+
+#include <array>
+#include <cstddef>
+
+#include <tao/json.hpp>
+
+namespace snapclient {
+
+namespace {
+constexpr const char* kFlowNames[] = {"stereo", "biamp", "bassBoost",
+                                      "eqBassTreble"};
+
+const char* flowName(DspFlow flow) {
+  return kFlowNames[static_cast<size_t>(flow)];
+}
+
+std::optional<DspFlow> flowFromName(const std::string& name) {
+  for (size_t i = 0; i < std::size(kFlowNames); i++) {
+    if (name == kFlowNames[i]) {
+      return static_cast<DspFlow>(i);
+    }
+  }
+  return std::nullopt;
+}
+
+const char* kServerHostKey = "server.host";
+const char* kServerPortKey = "server.port";
+const char* kActiveFlowKey = "dsp.activeFlow";
+
+std::string paramKey(DspFlow flow, const char* field) {
+  return std::string("dsp.") + flowName(flow) + "." + field;
+}
+}  // namespace
+
+ControlSettings::ControlSettings(SettingsStore& store) : store_(store) {
+  load();
+}
+
+void ControlSettings::load() {
+  if (auto v = store_.getString(kServerHostKey)) {
+    serverHost_ = *v;
+  }
+  if (auto v = store_.getInt(kServerPortKey)) {
+    serverPort_ = static_cast<uint16_t>(*v);
+  }
+  if (auto v = store_.getString(kActiveFlowKey)) {
+    if (auto flow = flowFromName(*v)) {
+      activeFlow_ = *flow;
+    }
+  }
+  for (size_t i = 0; i < flowParams_.size(); i++) {
+    auto flow = static_cast<DspFlow>(i);
+    DspFilterParams params;
+    if (auto v = store_.getFloat(paramKey(flow, "freqPrimaryHz"))) {
+      params.freqPrimaryHz = *v;
+    }
+    if (auto v = store_.getFloat(paramKey(flow, "gainPrimaryDb"))) {
+      params.gainPrimaryDb = *v;
+    }
+    if (auto v = store_.getFloat(paramKey(flow, "freqTertiaryHz"))) {
+      params.freqTertiaryHz = *v;
+    }
+    if (auto v = store_.getFloat(paramKey(flow, "gainTertiaryDb"))) {
+      params.gainTertiaryDb = *v;
+    }
+    flowParams_[i] = params;
+  }
+}
+
+std::string ControlSettings::serverHost() const {
+  std::scoped_lock lock(mutex_);
+  return serverHost_;
+}
+
+void ControlSettings::setServerHost(const std::string& host) {
+  std::scoped_lock lock(mutex_);
+  serverHost_ = host;
+  store_.setString(kServerHostKey, host);
+}
+
+uint16_t ControlSettings::serverPort() const {
+  std::scoped_lock lock(mutex_);
+  return serverPort_;
+}
+
+void ControlSettings::setServerPort(uint16_t port) {
+  std::scoped_lock lock(mutex_);
+  serverPort_ = port;
+  store_.setInt(kServerPortKey, port);
+}
+
+DspFlow ControlSettings::activeFlow() const {
+  std::scoped_lock lock(mutex_);
+  return activeFlow_;
+}
+
+void ControlSettings::setActiveFlow(DspFlow flow) {
+  std::scoped_lock lock(mutex_);
+  activeFlow_ = flow;
+  store_.setString(kActiveFlowKey, flowName(flow));
+}
+
+DspFilterParams ControlSettings::flowParams(DspFlow flow) const {
+  std::scoped_lock lock(mutex_);
+  return flowParams_[static_cast<size_t>(flow)];
+}
+
+void ControlSettings::setFlowParams(DspFlow flow,
+                                    const DspFilterParams& params) {
+  std::scoped_lock lock(mutex_);
+  flowParams_[static_cast<size_t>(flow)] = params;
+  store_.setFloat(paramKey(flow, "freqPrimaryHz"), params.freqPrimaryHz);
+  store_.setFloat(paramKey(flow, "gainPrimaryDb"), params.gainPrimaryDb);
+  store_.setFloat(paramKey(flow, "freqTertiaryHz"), params.freqTertiaryHz);
+  store_.setFloat(paramKey(flow, "gainTertiaryDb"), params.gainTertiaryDb);
+}
+
+std::string ControlSettings::toJson() const {
+  std::scoped_lock lock(mutex_);
+
+  tao::json::value flows;
+  for (size_t i = 0; i < flowParams_.size(); i++) {
+    const auto& p = flowParams_[i];
+    tao::json::value f;
+    f["freqPrimaryHz"] = p.freqPrimaryHz;
+    f["gainPrimaryDb"] = p.gainPrimaryDb;
+    f["freqTertiaryHz"] = p.freqTertiaryHz;
+    f["gainTertiaryDb"] = p.gainTertiaryDb;
+    flows[kFlowNames[i]] = f;
+  }
+
+  tao::json::value obj;
+  obj["server"]["host"] = serverHost_;
+  obj["server"]["port"] = serverPort_;
+  obj["dsp"]["activeFlow"] = flowName(activeFlow_);
+  obj["dsp"]["flows"] = flows;
+
+  return tao::json::to_string(obj);
+}
+
+bool ControlSettings::applyJson(const std::string& json) {
+  tao::json::value obj;
+  try {
+    obj = tao::json::from_string(json);
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (!obj.is_object()) {
+    return false;
+  }
+
+  std::optional<std::string> newHost;
+  std::optional<uint16_t> newPort;
+  std::optional<DspFlow> newActiveFlow;
+  std::array<std::optional<DspFilterParams>, 4> newFlowParams;
+
+  try {
+    if (const auto* server = obj.find("server")) {
+      if (!server->is_object()) {
+        return false;
+      }
+      if (const auto* host = server->find("host")) {
+        newHost = host->as<std::string>();
+      }
+      if (const auto* port = server->find("port")) {
+        newPort = static_cast<uint16_t>(port->as<uint32_t>());
+      }
+    }
+    if (const auto* dsp = obj.find("dsp")) {
+      if (!dsp->is_object()) {
+        return false;
+      }
+      if (const auto* active = dsp->find("activeFlow")) {
+        auto flow = flowFromName(active->as<std::string>());
+        if (!flow) {
+          return false;
+        }
+        newActiveFlow = *flow;
+      }
+      if (const auto* flowsObj = dsp->find("flows")) {
+        if (!flowsObj->is_object()) {
+          return false;
+        }
+        for (const auto& [name, value] : flowsObj->get_object()) {
+          auto flow = flowFromName(name);
+          if (!flow) {
+            return false;
+          }
+          if (!value.is_object()) {
+            return false;
+          }
+          DspFilterParams params = flowParams(*flow);
+          if (const auto* v = value.find("freqPrimaryHz")) {
+            params.freqPrimaryHz = v->as<float>();
+          }
+          if (const auto* v = value.find("gainPrimaryDb")) {
+            params.gainPrimaryDb = v->as<float>();
+          }
+          if (const auto* v = value.find("freqTertiaryHz")) {
+            params.freqTertiaryHz = v->as<float>();
+          }
+          if (const auto* v = value.find("gainTertiaryDb")) {
+            params.gainTertiaryDb = v->as<float>();
+          }
+          newFlowParams[static_cast<size_t>(*flow)] = params;
+        }
+      }
+    }
+  } catch (const std::exception&) {
+    return false;
+  }
+
+  if (newHost) {
+    setServerHost(*newHost);
+  }
+  if (newPort) {
+    setServerPort(*newPort);
+  }
+  if (newActiveFlow) {
+    setActiveFlow(*newActiveFlow);
+  }
+  for (size_t i = 0; i < newFlowParams.size(); i++) {
+    if (newFlowParams[i]) {
+      setFlowParams(static_cast<DspFlow>(i), *newFlowParams[i]);
+    }
+  }
+  return true;
+}
+
+}  // namespace snapclient
