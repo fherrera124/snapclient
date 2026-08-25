@@ -1,0 +1,40 @@
+menu "Snapclient Configuration"
+
+    config SNAPCLIENT_I2S_BCLK_GPIO
+        int "I2S BCK (bit clock) GPIO"
+        default 17
+        help
+            Change to match your own board's wiring via menuconfig.
+
+    config SNAPCLIENT_I2S_WS_GPIO
+        int "I2S LRCK (word select) GPIO"
+        default 18
+
+    config SNAPCLIENT_I2S_DOUT_GPIO
+        int "I2S DIN (data) GPIO"
+        default 6
+
+    config SNAPCLIENT_I2S_MCLK_GPIO
+        int "I2S MCLK GPIO (-1 if unused)"
+        default 0
+        help
+            PCM5102A has its own internal PLL and doesn't strictly need
+            MCLK, but driving it is harmless.
+
+    config SNAPCLIENT_I2S_MUTE_GPIO
+        int "PCM5102A XSMT mute GPIO (-1 if unused)"
+        default -1
+        help
+            Only needed if XSMT is wired to a GPIO rather than tied via an
+            onboard pull-up (common on cheap breakout boards, in which
+            case leave this at -1).
+
+    config SNAPCLIENT_SERVER_HOST
+        string "Snapserver host"
+        default "192.168.1.1"
+
+    config SNAPCLIENT_SERVER_PORT
+        int "Snapserver port"
+        default 1704
+
+endmenu
