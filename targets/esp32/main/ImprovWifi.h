@@ -1,0 +1,82 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
+
+#include <bell/utils/Task.h>
+
+namespace snapclient {
+
+// Improv Serial (improv-wifi.com) WiFi provisioning over whichever
+// interface ESP-IDF's console Kconfig selects (UART or USB-Serial-JTAG).
+// Always listens, whether or not credentials are already stored -
+// reprovisioning doesn't need a factory reset.
+class ImprovWifi : public bell::Task {
+ public:
+  ImprovWifi();
+  ~ImprovWifi() override;
+
+  // Fired after a WIFI_SETTINGS command successfully connects.
+  std::function<void()> onProvisioned;
+
+ protected:
+  void taskLoop() override;
+
+ private:
+  enum class State : uint8_t {
+    Stopped = 0x00,
+    AwaitingAuthorization = 0x01,
+    Authorized = 0x02,
+    Provisioning = 0x03,
+    Provisioned = 0x04,
+  };
+  enum class ErrorCode : uint8_t {
+    None = 0x00,
+    InvalidRpc = 0x01,
+    UnknownRpc = 0x02,
+    UnableToConnect = 0x03,
+    NotAuthorized = 0x04,
+    Unknown = 0xFF,
+  };
+  enum class Command : uint8_t {
+    Unknown = 0x00,
+    WifiSettings = 0x01,
+    GetCurrentState = 0x02,
+    GetDeviceInfo = 0x03,
+    GetWifiNetworks = 0x04,
+  };
+  enum class FrameType : uint8_t {
+    CurrentState = 0x01,
+    ErrorState = 0x02,
+    Rpc = 0x03,
+    RpcResponse = 0x04,
+  };
+
+  static constexpr uint8_t kProtocolVersion = 1;
+  static constexpr size_t kMaxPayloadLen = 255;
+
+  size_t framePos_ = 0;
+  std::array<uint8_t, 9 + kMaxPayloadLen> frame_{};
+
+  void handleByte(uint8_t b);
+  void onFrameComplete(const uint8_t* payload, uint8_t len);
+  void handleCommand(Command cmd, const uint8_t* data, uint8_t len);
+
+  void sendState(State state);
+  void sendError(ErrorCode error);
+  void sendRpcResponse(Command cmd, const std::vector<std::string>& fields);
+  void writeFrame(FrameType type, const std::vector<uint8_t>& payload);
+  void writeBytes(const uint8_t* data, size_t len);
+
+  bool connectWifi(const std::string& ssid, const std::string& password);
+  bool isConnected();
+  std::string deviceUrl();
+  std::vector<std::string> deviceInfoFields();
+  void sendWifiNetworks();
+};
+
+}  // namespace snapclient
