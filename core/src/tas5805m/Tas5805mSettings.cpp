@@ -16,6 +16,11 @@ const char* kBdFreqKey = "dac.bdFreq";
 const char* kMixerModeKey = "dac.mixerMode";
 const char* kChannelGainLKey = "dac.channelGainL";
 const char* kChannelGainRKey = "dac.channelGainR";
+const char* kEqModeKey = "dac.eq.mode";
+const char* kEqGainLPrefix = "dac.eq.gainL.";
+const char* kEqGainRPrefix = "dac.eq.gainR.";
+const char* kEqProfileLKey = "dac.eq.profileL";
+const char* kEqProfileRKey = "dac.eq.profileR";
 
 const char* dacModeName(Tas5805mDacMode mode) {
   return mode == Tas5805mDacMode::Pbtl ? "pbtl" : "btl";
@@ -131,6 +136,47 @@ std::optional<Tas5805mMixerMode> mixerModeFromName(const std::string& name) {
 
 bool inRange(int32_t v, int32_t lo, int32_t hi) { return v >= lo && v <= hi; }
 
+const char* eqModeName(Tas5805mEqMode mode) {
+  switch (mode) {
+    case Tas5805mEqMode::Off:
+      return "off";
+    case Tas5805mEqMode::On:
+      return "on";
+    case Tas5805mEqMode::Biamp:
+      return "biamp";
+    case Tas5805mEqMode::BiampOff:
+      return "biampOff";
+  }
+  return "off";
+}
+
+std::optional<Tas5805mEqMode> eqModeFromName(const std::string& name) {
+  if (name == "off") return Tas5805mEqMode::Off;
+  if (name == "on") return Tas5805mEqMode::On;
+  if (name == "biamp") return Tas5805mEqMode::Biamp;
+  if (name == "biampOff") return Tas5805mEqMode::BiampOff;
+  return std::nullopt;
+}
+
+constexpr const char* kEqProfileNames[] = {
+    "flat",  "lf60",  "lf70",  "lf80",  "lf90",  "lf100", "lf110",
+    "lf120", "lf130", "lf140", "lf150", "hf60",  "hf70",  "hf80",
+    "hf90",  "hf100", "hf110", "hf120", "hf130", "hf140", "hf150",
+};
+
+const char* eqProfileName(Tas5805mEqProfile profile) {
+  return kEqProfileNames[static_cast<size_t>(profile)];
+}
+
+std::optional<Tas5805mEqProfile> eqProfileFromName(const std::string& name) {
+  for (size_t i = 0; i < std::size(kEqProfileNames); i++) {
+    if (name == kEqProfileNames[i]) {
+      return static_cast<Tas5805mEqProfile>(i);
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 Tas5805mSettings::Tas5805mSettings(SettingsStore& store) : store_(store) {
@@ -176,6 +222,33 @@ void Tas5805mSettings::load() {
   if (auto v = store_.getInt(kChannelGainRKey)) {
     if (inRange(*v, -24, 24)) {
       channelGainR_ = static_cast<int8_t>(*v);
+    }
+  }
+  if (auto v = store_.getString(kEqModeKey)) {
+    if (auto mode = eqModeFromName(*v)) {
+      eqMode_ = *mode;
+    }
+  }
+  for (size_t i = 0; i < eqGainL_.size(); i++) {
+    if (auto v = store_.getInt(kEqGainLPrefix + std::to_string(i))) {
+      if (inRange(*v, -15, 15)) {
+        eqGainL_[i] = static_cast<int8_t>(*v);
+      }
+    }
+    if (auto v = store_.getInt(kEqGainRPrefix + std::to_string(i))) {
+      if (inRange(*v, -15, 15)) {
+        eqGainR_[i] = static_cast<int8_t>(*v);
+      }
+    }
+  }
+  if (auto v = store_.getString(kEqProfileLKey)) {
+    if (auto profile = eqProfileFromName(*v)) {
+      eqProfileL_ = *profile;
+    }
+  }
+  if (auto v = store_.getString(kEqProfileRKey)) {
+    if (auto profile = eqProfileFromName(*v)) {
+      eqProfileR_ = *profile;
     }
   }
 }
@@ -258,6 +331,57 @@ void Tas5805mSettings::setChannelGain(int8_t left, int8_t right) {
   store_.setInt(kChannelGainRKey, right);
 }
 
+Tas5805mEqMode Tas5805mSettings::eqMode() const {
+  std::scoped_lock lock(mutex_);
+  return eqMode_;
+}
+
+void Tas5805mSettings::setEqMode(Tas5805mEqMode mode) {
+  std::scoped_lock lock(mutex_);
+  eqMode_ = mode;
+  store_.setString(kEqModeKey, eqModeName(mode));
+}
+
+std::array<int8_t, 15> Tas5805mSettings::eqGainLeft() const {
+  std::scoped_lock lock(mutex_);
+  return eqGainL_;
+}
+
+std::array<int8_t, 15> Tas5805mSettings::eqGainRight() const {
+  std::scoped_lock lock(mutex_);
+  return eqGainR_;
+}
+
+void Tas5805mSettings::setEqGain(const std::array<int8_t, 15>& left,
+                                 const std::array<int8_t, 15>& right) {
+  std::scoped_lock lock(mutex_);
+  eqGainL_ = left;
+  eqGainR_ = right;
+  for (size_t i = 0; i < eqGainL_.size(); i++) {
+    store_.setInt(kEqGainLPrefix + std::to_string(i), eqGainL_[i]);
+    store_.setInt(kEqGainRPrefix + std::to_string(i), eqGainR_[i]);
+  }
+}
+
+Tas5805mEqProfile Tas5805mSettings::eqProfileLeft() const {
+  std::scoped_lock lock(mutex_);
+  return eqProfileL_;
+}
+
+Tas5805mEqProfile Tas5805mSettings::eqProfileRight() const {
+  std::scoped_lock lock(mutex_);
+  return eqProfileR_;
+}
+
+void Tas5805mSettings::setEqProfile(Tas5805mEqProfile left,
+                                    Tas5805mEqProfile right) {
+  std::scoped_lock lock(mutex_);
+  eqProfileL_ = left;
+  eqProfileR_ = right;
+  store_.setString(kEqProfileLKey, eqProfileName(left));
+  store_.setString(kEqProfileRKey, eqProfileName(right));
+}
+
 std::string Tas5805mSettings::toJson() const {
   std::scoped_lock lock(mutex_);
 
@@ -270,6 +394,18 @@ std::string Tas5805mSettings::toJson() const {
   obj["dac"]["mixerMode"] = mixerModeName(mixerMode_);
   obj["dac"]["channelGainL"] = channelGainL_;
   obj["dac"]["channelGainR"] = channelGainR_;
+
+  tao::json::value gainL;
+  tao::json::value gainR;
+  for (size_t i = 0; i < eqGainL_.size(); i++) {
+    gainL.emplace_back(eqGainL_[i]);
+    gainR.emplace_back(eqGainR_[i]);
+  }
+  obj["dac"]["eq"]["mode"] = eqModeName(eqMode_);
+  obj["dac"]["eq"]["gainL"] = std::move(gainL);
+  obj["dac"]["eq"]["gainR"] = std::move(gainR);
+  obj["dac"]["eq"]["profileL"] = eqProfileName(eqProfileL_);
+  obj["dac"]["eq"]["profileR"] = eqProfileName(eqProfileR_);
 
   return tao::json::to_string(obj);
 }
@@ -293,6 +429,11 @@ bool Tas5805mSettings::applyJson(const std::string& json) {
   std::optional<Tas5805mMixerMode> newMixerMode;
   std::optional<int8_t> newChannelGainL;
   std::optional<int8_t> newChannelGainR;
+  std::optional<Tas5805mEqMode> newEqMode;
+  std::optional<std::array<int8_t, 15>> newEqGainL;
+  std::optional<std::array<int8_t, 15>> newEqGainR;
+  std::optional<Tas5805mEqProfile> newEqProfileL;
+  std::optional<Tas5805mEqProfile> newEqProfileR;
 
   try {
     const auto* dac = obj.find("dac");
@@ -370,6 +511,62 @@ bool Tas5805mSettings::applyJson(const std::string& json) {
       }
       newChannelGainR = static_cast<int8_t>(gain);
     }
+    if (const auto* eq = dac->find("eq")) {
+      if (!eq->is_object()) {
+        return false;
+      }
+      if (const auto* v = eq->find("mode")) {
+        auto mode = eqModeFromName(v->as<std::string>());
+        if (!mode) {
+          return false;
+        }
+        newEqMode = *mode;
+      }
+      if (const auto* v = eq->find("gainL")) {
+        if (!v->is_array() || v->get_array().size() != 15) {
+          return false;
+        }
+        std::array<int8_t, 15> gains{};
+        size_t i = 0;
+        for (const auto& item : v->get_array()) {
+          auto g = item.as<int32_t>();
+          if (!inRange(g, -15, 15)) {
+            return false;
+          }
+          gains[i++] = static_cast<int8_t>(g);
+        }
+        newEqGainL = gains;
+      }
+      if (const auto* v = eq->find("gainR")) {
+        if (!v->is_array() || v->get_array().size() != 15) {
+          return false;
+        }
+        std::array<int8_t, 15> gains{};
+        size_t i = 0;
+        for (const auto& item : v->get_array()) {
+          auto g = item.as<int32_t>();
+          if (!inRange(g, -15, 15)) {
+            return false;
+          }
+          gains[i++] = static_cast<int8_t>(g);
+        }
+        newEqGainR = gains;
+      }
+      if (const auto* v = eq->find("profileL")) {
+        auto profile = eqProfileFromName(v->as<std::string>());
+        if (!profile) {
+          return false;
+        }
+        newEqProfileL = *profile;
+      }
+      if (const auto* v = eq->find("profileR")) {
+        auto profile = eqProfileFromName(v->as<std::string>());
+        if (!profile) {
+          return false;
+        }
+        newEqProfileR = *profile;
+      }
+    }
   } catch (const std::exception&) {
     return false;
   }
@@ -389,6 +586,17 @@ bool Tas5805mSettings::applyJson(const std::string& json) {
   if (newChannelGainL || newChannelGainR) {
     setChannelGain(newChannelGainL.value_or(channelGainLeft()),
                    newChannelGainR.value_or(channelGainRight()));
+  }
+  if (newEqMode) {
+    setEqMode(*newEqMode);
+  }
+  if (newEqGainL || newEqGainR) {
+    setEqGain(newEqGainL.value_or(eqGainLeft()),
+              newEqGainR.value_or(eqGainRight()));
+  }
+  if (newEqProfileL || newEqProfileR) {
+    setEqProfile(newEqProfileL.value_or(eqProfileLeft()),
+                newEqProfileR.value_or(eqProfileRight()));
   }
   return true;
 }

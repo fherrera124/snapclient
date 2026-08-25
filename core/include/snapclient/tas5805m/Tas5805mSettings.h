@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -36,6 +37,18 @@ class Tas5805mSettings {
   int8_t channelGainRight() const;  // -24..24
   void setChannelGain(int8_t left, int8_t right);
 
+  Tas5805mEqMode eqMode() const;
+  void setEqMode(Tas5805mEqMode mode);
+
+  std::array<int8_t, 15> eqGainLeft() const;   // -15..15 per band
+  std::array<int8_t, 15> eqGainRight() const;  // -15..15 per band
+  void setEqGain(const std::array<int8_t, 15>& left,
+                const std::array<int8_t, 15>& right);
+
+  Tas5805mEqProfile eqProfileLeft() const;
+  Tas5805mEqProfile eqProfileRight() const;
+  void setEqProfile(Tas5805mEqProfile left, Tas5805mEqProfile right);
+
   std::string toJson() const;
 
   // Validates the whole partial payload before applying anything: false
@@ -55,6 +68,11 @@ class Tas5805mSettings {
   Tas5805mMixerMode mixerMode_ = Tas5805mMixerMode::Stereo;
   int8_t channelGainL_ = 0;
   int8_t channelGainR_ = 0;
+  Tas5805mEqMode eqMode_ = Tas5805mEqMode::Off;
+  std::array<int8_t, 15> eqGainL_{};
+  std::array<int8_t, 15> eqGainR_{};
+  Tas5805mEqProfile eqProfileL_ = Tas5805mEqProfile::Flat;
+  Tas5805mEqProfile eqProfileR_ = Tas5805mEqProfile::Flat;
 
   void load();
 };

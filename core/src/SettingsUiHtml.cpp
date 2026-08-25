@@ -16,6 +16,9 @@ const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   button { margin-top: 1rem; padding: 0.5rem 1rem; }
   #status.ok { color: green; }
   #status.error { color: red; }
+  .eqBandRow { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.4rem; }
+  .eqBandRow span { width: 4.5rem; font-size: 0.85rem; }
+  .eqBandRow input { margin-top: 0; }
 </style>
 </head>
 <body>
@@ -102,6 +105,23 @@ const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <label for="channelGainR">Channel gain R (dB)</label>
   <input id="channelGainR" type="number" min="-24" max="24" required>
 
+  <h1>15-band EQ</h1>
+  <label for="eqMode">EQ mode</label>
+  <select id="eqMode">
+    <option value="off">Off</option>
+    <option value="on">On (left channel)</option>
+    <option value="biamp">Biamp (both channels)</option>
+    <option value="biampOff">Biamp, off</option>
+  </select>
+
+  <label for="eqProfileL">Preset (left)</label>
+  <select id="eqProfileL"></select>
+
+  <label for="eqProfileR">Preset (right)</label>
+  <select id="eqProfileR"></select>
+
+  <div id="eqBands"></div>
+
   <button type="submit">Save</button>
   <p id="dacStatus"></p>
   <p id="faults"></p>
@@ -178,6 +198,37 @@ document.getElementById('form').addEventListener('submit', async (e) => {
   }
 });
 
+const eqProfiles = [
+  ['flat', 'Flat'],
+  ['lf60', '60Hz LF'], ['lf70', '70Hz LF'], ['lf80', '80Hz LF'],
+  ['lf90', '90Hz LF'], ['lf100', '100Hz LF'], ['lf110', '110Hz LF'],
+  ['lf120', '120Hz LF'], ['lf130', '130Hz LF'], ['lf140', '140Hz LF'],
+  ['lf150', '150Hz LF'],
+  ['hf60', '60Hz HF'], ['hf70', '70Hz HF'], ['hf80', '80Hz HF'],
+  ['hf90', '90Hz HF'], ['hf100', '100Hz HF'], ['hf110', '110Hz HF'],
+  ['hf120', '120Hz HF'], ['hf130', '130Hz HF'], ['hf140', '140Hz HF'],
+  ['hf150', '150Hz HF']
+];
+const eqBandsHz = [20, 32, 50, 80, 125, 200, 315, 500, 800, 1250, 2000, 3150, 5000, 8000, 16000];
+
+function populateSelectOptions(id, options) {
+  document.getElementById(id).innerHTML =
+    options.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+}
+
+function buildEqBandInputs() {
+  document.getElementById('eqBands').innerHTML = eqBandsHz.map((hz, i) => `
+    <div class="eqBandRow">
+      <span>${hz} Hz</span>
+      <input id="eqGainL${i}" type="number" min="-15" max="15" step="1">
+      <input id="eqGainR${i}" type="number" min="-15" max="15" step="1">
+    </div>`).join('');
+}
+
+populateSelectOptions('eqProfileL', eqProfiles);
+populateSelectOptions('eqProfileR', eqProfiles);
+buildEqBandInputs();
+
 function faultsText(faults) {
   const active = Object.entries(faults).filter(([, v]) => v).map(([k]) => k);
   return active.length ? 'Faults: ' + active.join(', ') : 'No faults.';
@@ -209,6 +260,13 @@ async function loadDac() {
     document.getElementById('mixerMode').value = dac.mixerMode;
     document.getElementById('channelGainL').value = dac.channelGainL;
     document.getElementById('channelGainR').value = dac.channelGainR;
+    document.getElementById('eqMode').value = dac.eq.mode;
+    document.getElementById('eqProfileL').value = dac.eq.profileL;
+    document.getElementById('eqProfileR').value = dac.eq.profileR;
+    eqBandsHz.forEach((_, i) => {
+      document.getElementById('eqGainL' + i).value = dac.eq.gainL[i];
+      document.getElementById('eqGainR' + i).value = dac.eq.gainR[i];
+    });
     loadFaults();
     setInterval(loadFaults, 5000);
   } catch (err) {
@@ -229,7 +287,14 @@ document.getElementById('dacForm').addEventListener('submit', async (e) => {
       },
       mixerMode: document.getElementById('mixerMode').value,
       channelGainL: parseInt(document.getElementById('channelGainL').value, 10),
-      channelGainR: parseInt(document.getElementById('channelGainR').value, 10)
+      channelGainR: parseInt(document.getElementById('channelGainR').value, 10),
+      eq: {
+        mode: document.getElementById('eqMode').value,
+        profileL: document.getElementById('eqProfileL').value,
+        profileR: document.getElementById('eqProfileR').value,
+        gainL: eqBandsHz.map((_, i) => parseInt(document.getElementById('eqGainL' + i).value, 10)),
+        gainR: eqBandsHz.map((_, i) => parseInt(document.getElementById('eqGainR' + i).value, 10))
+      }
     }
   };
   const statusEl = document.getElementById('dacStatus');

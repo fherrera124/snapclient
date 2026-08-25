@@ -364,6 +364,56 @@ bool tas5805mDriverSmokeTest() {
     allOk = allOk && ok;
   }
 
+  {
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setEqMode(Tas5805mEqMode::On);
+    ok = ok && bus.writes.size() == 1 &&
+         bus.writes[0] == std::vector<uint8_t>{0x66, 0b0110};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setEqMode: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    // tas5805m_eq_registers_left_mf[0..3] (gain step -15dB, band 0):
+    // {0x24,0x18,0x07},{0x24,0x19,0xfc},{0x24,0x56,0xa2},{0x24,0x57,0x71}.
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setEqGainChannel(Tas5805mChannel::Left, 0, -15);
+    std::vector<std::vector<uint8_t>> dataWrites;
+    for (const auto& w : bus.writes) {
+      if (w.size() == 5) {
+        dataWrites.push_back(w);
+      }
+    }
+    ok = ok && bus.writes.size() == 11 && dataWrites.size() == 5 &&
+         dataWrites[0] == std::vector<uint8_t>{0x18, 0x07, 0xfc, 0xa2, 0x71};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setEqGainChannel: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    // tas5805m_eq_registers_left_flat[0..3] (FLAT profile, band 0):
+    // {0x24,0x18,0x08},{0x24,0x19,0x00},{0x24,0x1a,0x00},{0x24,0x1b,0x00}.
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setEqProfileChannel(Tas5805mChannel::Left,
+                                        Tas5805mEqProfile::Flat);
+    std::vector<std::vector<uint8_t>> dataWrites;
+    for (const auto& w : bus.writes) {
+      if (w.size() == 5) {
+        dataWrites.push_back(w);
+      }
+    }
+    ok = ok && bus.writes.size() == 21 && dataWrites.size() == 15 &&
+         dataWrites[0] == std::vector<uint8_t>{0x18, 0x08, 0x00, 0x00, 0x00};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setEqProfileChannel: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
   return allOk;
 }
 
@@ -384,7 +434,11 @@ bool tas5805mSettingsSmokeTest() {
              R"({"dac":{"analogGain":10,"dacMode":"pbtl",)"
              R"("modulation":{"mode":"hybrid","swFreqHz":384000,)"
              R"("bdFreqHz":100000},"mixerMode":"mono",)"
-             R"("channelGainL":-6,"channelGainR":6}})") &&
+             R"("channelGainL":-6,"channelGainR":6,)"
+             R"("eq":{"mode":"biamp",)"
+             R"("gainL":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],)"
+             R"("gainR":[-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12,-13,-14,-15],)"
+             R"("profileL":"lf60","profileR":"hf90"}}})") &&
          ok;
     ok = (settings.analogGain() == 10) && ok;
     ok = (settings.dacMode() == Tas5805mDacMode::Pbtl) && ok;
@@ -394,6 +448,14 @@ bool tas5805mSettingsSmokeTest() {
     ok = (settings.mixerMode() == Tas5805mMixerMode::Mono) && ok;
     ok = (settings.channelGainLeft() == -6) && ok;
     ok = (settings.channelGainRight() == 6) && ok;
+    ok = (settings.eqMode() == Tas5805mEqMode::Biamp) && ok;
+    ok = (settings.eqGainLeft()[0] == 1 && settings.eqGainLeft()[14] == 15) &&
+         ok;
+    ok = (settings.eqGainRight()[0] == -1 &&
+         settings.eqGainRight()[14] == -15) &&
+         ok;
+    ok = (settings.eqProfileLeft() == Tas5805mEqProfile::Lf60) && ok;
+    ok = (settings.eqProfileRight() == Tas5805mEqProfile::Hf90) && ok;
   }
 
   {
@@ -405,11 +467,26 @@ bool tas5805mSettingsSmokeTest() {
     ok = (settings.dacMode() == Tas5805mDacMode::Pbtl) && ok;
     ok = (settings.mixerMode() == Tas5805mMixerMode::Mono) && ok;
     ok = (settings.channelGainLeft() == -6) && ok;
+    ok = (settings.eqMode() == Tas5805mEqMode::Biamp) && ok;
+    ok = (settings.eqGainLeft()[7] == 8) && ok;
+    ok = (settings.eqGainRight()[7] == -8) && ok;
+    ok = (settings.eqProfileLeft() == Tas5805mEqProfile::Lf60) && ok;
+    ok = (settings.eqProfileRight() == Tas5805mEqProfile::Hf90) && ok;
 
     ok = !settings.applyJson(R"({"dac":{"analogGain":32}})") && ok;
     ok = !settings.applyJson(R"({"dac":{"dacMode":"nope"}})") && ok;
     ok = !settings.applyJson(R"({"dac":{"channelGainL":25}})") && ok;
+    ok = !settings.applyJson(R"({"dac":{"eq":{"mode":"nope"}}})") && ok;
+    ok = !settings.applyJson(
+             R"({"dac":{"eq":{"gainL":[0,0,0,0,0,0,0,0,0,0,0,0,0,0]}}})") &&
+         ok;
+    ok = !settings.applyJson(
+             R"({"dac":{"eq":{"gainL":)"
+             R"([16,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}}})") &&
+         ok;
+    ok = !settings.applyJson(R"({"dac":{"eq":{"profileL":"nope"}}})") && ok;
     ok = (settings.analogGain() == 10) && ok;
+    ok = (settings.eqMode() == Tas5805mEqMode::Biamp) && ok;
   }
 
   fs::remove(path, ec);

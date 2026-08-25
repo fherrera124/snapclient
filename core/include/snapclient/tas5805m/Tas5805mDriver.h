@@ -37,6 +37,37 @@ enum class Tas5805mMixerMode { Stereo, StereoInverse, Mono, Left, Right };
 
 enum class Tas5805mChannel { Left, Right };
 
+enum class Tas5805mEqMode : uint8_t {
+  Off = 0b0111,
+  On = 0b0110,
+  Biamp = 0b1110,
+  BiampOff = 0b1111,
+};
+
+enum class Tas5805mEqProfile : uint8_t {
+  Flat = 0,
+  Lf60,
+  Lf70,
+  Lf80,
+  Lf90,
+  Lf100,
+  Lf110,
+  Lf120,
+  Lf130,
+  Lf140,
+  Lf150,
+  Hf60,
+  Hf70,
+  Hf80,
+  Hf90,
+  Hf100,
+  Hf110,
+  Hf120,
+  Hf130,
+  Hf140,
+  Hf150,
+};
+
 struct Tas5805mFaults {
   bool rightOverCurrent = false;
   bool leftOverCurrent = false;
@@ -53,10 +84,10 @@ struct Tas5805mFaults {
   bool any() const;
 };
 
-// Register/book-page logic for the TAS5805M's non-EQ controls (state,
-// volume, analog gain, DAC mode, modulation, mixer routing, per-channel
-// gain, faults) - book 0xaa (the 15-band EQ) is untouched. Owns no GPIO;
-// PDN/reset handling stays with the caller.
+// Register/book-page logic for the TAS5805M: state, volume, analog gain,
+// DAC mode, modulation, mixer routing, per-channel gain, faults, and the
+// 15-band EQ (book 0xaa). Owns no GPIO; PDN/reset handling stays with the
+// caller.
 class Tas5805mDriver {
  public:
   explicit Tas5805mDriver(I2cBus& bus, uint8_t deviceAddr = 0x2D);
@@ -83,6 +114,11 @@ class Tas5805mDriver {
 
   bool getFaults(Tas5805mFaults& faults);
   bool clearFaults();
+
+  bool setEqMode(Tas5805mEqMode mode);
+  bool setEqGainChannel(Tas5805mChannel channel, int band,
+                        int8_t gainDb);  // band 0-14, gainDb -15..15
+  bool setEqProfileChannel(Tas5805mChannel channel, Tas5805mEqProfile profile);
 
  private:
   I2cBus& bus_;
