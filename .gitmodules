@@ -13,3 +13,7 @@
 [submodule "udp_logger"]
 	path = components/udp_logger
 	url = https://github.com/AchimPieters/esp32-udp-logger.git
+[submodule "external/bell"]
+	path = external/bell
+	url = https://github.com/fherrera124/bell.git
+	branch = dev

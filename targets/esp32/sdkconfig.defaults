@@ -1,0 +1,3 @@
+# bell throws exceptions in several places - ESP-IDF C++ builds have
+# exceptions off by default.
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
