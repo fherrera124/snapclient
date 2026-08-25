@@ -29,6 +29,11 @@ class ControlSettings {
   DspFilterParams flowParams(DspFlow flow) const;
   void setFlowParams(DspFlow flow, const DspFilterParams& params);
 
+  bool udpLogEnabled() const;
+  std::string udpLogHost() const;
+  uint16_t udpLogPort() const;
+  void setUdpLog(bool enabled, const std::string& host, uint16_t port);
+
   std::string toJson() const;
 
   // Validates the whole partial payload before applying anything: false
@@ -44,6 +49,9 @@ class ControlSettings {
   uint16_t serverPort_ = 1704;
   DspFlow activeFlow_ = DspFlow::Stereo;
   std::array<DspFilterParams, 4> flowParams_{};
+  bool udpLogEnabled_ = false;
+  std::string udpLogHost_;
+  uint16_t udpLogPort_ = 9999;
 
   void load();
 };

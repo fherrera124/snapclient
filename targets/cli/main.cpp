@@ -20,6 +20,7 @@
 #include "snapclient/SnapcastClient.h"
 #include "snapclient/SnapcastDiscovery.h"
 #include "snapclient/SyncEngine.h"
+#include "snapclient/UdpLogBackend.h"
 #include "snapclient/tas5805m/Tas5805mDriver.h"
 #include "snapclient/tas5805m/Tas5805mSettings.h"
 
@@ -95,10 +96,31 @@ int runSnapcastTest(const std::string& host, uint16_t port,
   dsp.switchFlow(settings.activeFlow());
   dsp.setParams(settings.activeFlow(), settings.flowParams(settings.activeFlow()));
 
+  snapclient::UdpLogBackend* udpLogBackend = nullptr;
+  auto applyUdpLogSettings = [&] {
+    if (udpLogBackend) {
+      bell::unregisterLoggerBackend(udpLogBackend);
+      udpLogBackend = nullptr;
+    }
+    if (settings.udpLogEnabled()) {
+      auto backendRes = snapclient::UdpLogBackend::create(
+          settings.udpLogHost(), settings.udpLogPort());
+      if (backendRes) {
+        udpLogBackend = backendRes->get();
+        bell::registerLoggerBackend(std::move(*backendRes));
+      } else {
+        BELL_LOG(warn, kLogTag, "udp log backend failed: {}",
+                 backendRes.error().message());
+      }
+    }
+  };
+  applyUdpLogSettings();
+
   control.onSettingsChanged = [&] {
     dsp.switchFlow(settings.activeFlow());
     dsp.setParams(settings.activeFlow(),
                   settings.flowParams(settings.activeFlow()));
+    applyUdpLogSettings();
     BELL_LOG(info, kLogTag, "settings applied: flow={} freqPrimaryHz={}",
              static_cast<int>(settings.activeFlow()),
              settings.flowParams(settings.activeFlow()).freqPrimaryHz);
@@ -264,5 +286,6 @@ int main(int argc, char** argv) {
   ok = snapclient::settingsSmokeTest() && ok;
   ok = snapclient::tas5805mDriverSmokeTest() && ok;
   ok = snapclient::tas5805mSettingsSmokeTest() && ok;
+  ok = snapclient::udpLogBackendSmokeTest() && ok;
   return ok ? 0 : 1;
 }

@@ -1,6 +1,7 @@
 #include "snapclient/Core.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +14,7 @@
 #include "snapclient/ControlSettings.h"
 #include "snapclient/DspProcessor.h"
 #include "snapclient/JsonFileSettingsStore.h"
+#include "snapclient/UdpLogBackend.h"
 #include "snapclient/tas5805m/Tas5805mDriver.h"
 #include "snapclient/tas5805m/Tas5805mSettings.h"
 
@@ -178,11 +180,16 @@ bool settingsSmokeTest() {
              R"({"server":{"host":"192.168.1.50","port":4444},)"
              R"("dsp":{"activeFlow":"biamp","flows":{"biamp":)"
              R"({"freqPrimaryHz":600,"gainPrimaryDb":1,)"
-             R"("freqTertiaryHz":700,"gainTertiaryDb":2}}}})") &&
+             R"("freqTertiaryHz":700,"gainTertiaryDb":2}}},)"
+             R"("logging":{"enabled":true,"udpHost":"192.168.1.99",)"
+             R"("udpPort":9999}})") &&
          ok;
     ok = (settings.serverHost() == "192.168.1.50") && ok;
     ok = (settings.serverPort() == 4444) && ok;
     ok = (settings.activeFlow() == DspFlow::Biamp) && ok;
+    ok = (settings.udpLogEnabled() == true) && ok;
+    ok = (settings.udpLogHost() == "192.168.1.99") && ok;
+    ok = (settings.udpLogPort() == 9999) && ok;
   }
 
   {
@@ -193,14 +200,22 @@ bool settingsSmokeTest() {
     ok = (settings.serverHost() == "192.168.1.50") && ok;
     ok = (settings.serverPort() == 4444) && ok;
     ok = (settings.activeFlow() == DspFlow::Biamp) && ok;
+    ok = (settings.udpLogEnabled() == true) && ok;
+    ok = (settings.udpLogHost() == "192.168.1.99") && ok;
     auto params = settings.flowParams(DspFlow::Biamp);
     ok = (params.freqPrimaryHz == 600.0f) && ok;
     ok = (params.gainPrimaryDb == 1.0f) && ok;
 
     ok = !settings.applyJson(R"({"dsp":{"activeFlow":"nope"}})") && ok;
     ok = !settings.applyJson(R"({"server":{"port":"not-a-number"}})") && ok;
+    ok = !settings.applyJson(R"({"logging":{"enabled":"not-a-bool"}})") && ok;
     ok = (settings.activeFlow() == DspFlow::Biamp) && ok;
     ok = (settings.serverPort() == 4444) && ok;
+    ok = (settings.udpLogEnabled() == true) && ok;
+
+    ok = settings.applyJson(R"({"logging":{"enabled":false}})") && ok;
+    ok = (settings.udpLogEnabled() == false) && ok;
+    ok = (settings.udpLogHost() == "192.168.1.99") && ok;
   }
 
   fs::remove(path, ec);
@@ -493,6 +508,42 @@ bool tas5805mSettingsSmokeTest() {
 
   BELL_LOG(info, LOG_TAG, "tas5805mSettingsSmokeTest: {}",
            ok ? "PASS" : "FAIL");
+  return ok;
+}
+
+bool udpLogBackendSmokeTest() {
+  bell::UDPSocket listener;
+  auto bindRes = listener.bind("127.0.0.1", 0, true);
+  if (!bindRes) {
+    BELL_LOG(error, LOG_TAG, "udpLogBackendSmokeTest: bind failed: {}",
+             bindRes.error().message());
+    return false;
+  }
+  auto port = static_cast<uint16_t>(*bindRes);
+
+  auto backendRes = UdpLogBackend::create("127.0.0.1", port);
+  if (!backendRes) {
+    BELL_LOG(error, LOG_TAG, "udpLogBackendSmokeTest: create failed: {}",
+             backendRes.error().message());
+    return false;
+  }
+
+  (*backendRes)->log(bell::LogLevel::warn, "TestFile.cpp", 42, "testtag",
+                     "hello world");
+
+  std::array<std::byte, 512> buf{};
+  bell::IpAddress fromAddr;
+  auto recvRes = listener.recvfrom(buf.data(), buf.size(), fromAddr);
+  if (!recvRes) {
+    BELL_LOG(error, LOG_TAG, "udpLogBackendSmokeTest: recv failed: {}",
+             recvRes.error().message());
+    return false;
+  }
+
+  std::string received(reinterpret_cast<const char*>(buf.data()), *recvRes);
+  bool ok = received.find("W [testtag] TestFile.cpp:42: hello world") !=
+           std::string::npos;
+  BELL_LOG(info, LOG_TAG, "udpLogBackendSmokeTest: {}", ok ? "PASS" : "FAIL");
   return ok;
 }
 

@@ -27,6 +27,9 @@ std::optional<DspFlow> flowFromName(const std::string& name) {
 const char* kServerHostKey = "server.host";
 const char* kServerPortKey = "server.port";
 const char* kActiveFlowKey = "dsp.activeFlow";
+const char* kUdpLogEnabledKey = "logging.enabled";
+const char* kUdpLogHostKey = "logging.udpHost";
+const char* kUdpLogPortKey = "logging.udpPort";
 
 std::string paramKey(DspFlow flow, const char* field) {
   return std::string("dsp.") + flowName(flow) + "." + field;
@@ -65,6 +68,15 @@ void ControlSettings::load() {
       params.gainTertiaryDb = *v;
     }
     flowParams_[i] = params;
+  }
+  if (auto v = store_.getInt(kUdpLogEnabledKey)) {
+    udpLogEnabled_ = (*v != 0);
+  }
+  if (auto v = store_.getString(kUdpLogHostKey)) {
+    udpLogHost_ = *v;
+  }
+  if (auto v = store_.getInt(kUdpLogPortKey)) {
+    udpLogPort_ = static_cast<uint16_t>(*v);
   }
 }
 
@@ -116,6 +128,32 @@ void ControlSettings::setFlowParams(DspFlow flow,
   store_.setFloat(paramKey(flow, "gainTertiaryDb"), params.gainTertiaryDb);
 }
 
+bool ControlSettings::udpLogEnabled() const {
+  std::scoped_lock lock(mutex_);
+  return udpLogEnabled_;
+}
+
+std::string ControlSettings::udpLogHost() const {
+  std::scoped_lock lock(mutex_);
+  return udpLogHost_;
+}
+
+uint16_t ControlSettings::udpLogPort() const {
+  std::scoped_lock lock(mutex_);
+  return udpLogPort_;
+}
+
+void ControlSettings::setUdpLog(bool enabled, const std::string& host,
+                                uint16_t port) {
+  std::scoped_lock lock(mutex_);
+  udpLogEnabled_ = enabled;
+  udpLogHost_ = host;
+  udpLogPort_ = port;
+  store_.setInt(kUdpLogEnabledKey, enabled ? 1 : 0);
+  store_.setString(kUdpLogHostKey, host);
+  store_.setInt(kUdpLogPortKey, port);
+}
+
 std::string ControlSettings::toJson() const {
   std::scoped_lock lock(mutex_);
 
@@ -136,6 +174,10 @@ std::string ControlSettings::toJson() const {
   obj["dsp"]["activeFlow"] = flowName(activeFlow_);
   obj["dsp"]["flows"] = flows;
 
+  obj["logging"]["enabled"] = udpLogEnabled_;
+  obj["logging"]["udpHost"] = udpLogHost_;
+  obj["logging"]["udpPort"] = udpLogPort_;
+
   return tao::json::to_string(obj);
 }
 
@@ -154,6 +196,9 @@ bool ControlSettings::applyJson(const std::string& json) {
   std::optional<uint16_t> newPort;
   std::optional<DspFlow> newActiveFlow;
   std::array<std::optional<DspFilterParams>, 4> newFlowParams;
+  std::optional<bool> newUdpLogEnabled;
+  std::optional<std::string> newUdpLogHost;
+  std::optional<uint16_t> newUdpLogPort;
 
   try {
     if (const auto* server = obj.find("server")) {
@@ -207,6 +252,26 @@ bool ControlSettings::applyJson(const std::string& json) {
         }
       }
     }
+    if (const auto* logging = obj.find("logging")) {
+      if (!logging->is_object()) {
+        return false;
+      }
+      bool enabled = udpLogEnabled();
+      std::string host = udpLogHost();
+      uint16_t port = udpLogPort();
+      if (const auto* v = logging->find("enabled")) {
+        enabled = v->as<bool>();
+      }
+      if (const auto* v = logging->find("udpHost")) {
+        host = v->as<std::string>();
+      }
+      if (const auto* v = logging->find("udpPort")) {
+        port = static_cast<uint16_t>(v->as<uint32_t>());
+      }
+      newUdpLogEnabled = enabled;
+      newUdpLogHost = host;
+      newUdpLogPort = port;
+    }
   } catch (const std::exception&) {
     return false;
   }
@@ -224,6 +289,11 @@ bool ControlSettings::applyJson(const std::string& json) {
     if (newFlowParams[i]) {
       setFlowParams(static_cast<DspFlow>(i), *newFlowParams[i]);
     }
+  }
+  if (newUdpLogEnabled || newUdpLogHost || newUdpLogPort) {
+    setUdpLog(newUdpLogEnabled.value_or(udpLogEnabled()),
+             newUdpLogHost.value_or(udpLogHost()),
+             newUdpLogPort.value_or(udpLogPort()));
   }
   return true;
 }

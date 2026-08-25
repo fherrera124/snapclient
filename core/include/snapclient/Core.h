@@ -20,4 +20,8 @@ bool tas5805mDriverSmokeTest();
 // settingsSmokeTest(); true if all passed.
 bool tas5805mSettingsSmokeTest();
 
+// Binds a real loopback UDP socket, sends a log line through
+// UdpLogBackend, and asserts the exact bytes received; true if passed.
+bool udpLogBackendSmokeTest();
+
 }  // namespace snapclient

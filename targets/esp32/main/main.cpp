@@ -25,6 +25,7 @@
 #include "snapclient/DspProcessor.h"
 #include "snapclient/SnapcastClient.h"
 #include "snapclient/SyncEngine.h"
+#include "snapclient/UdpLogBackend.h"
 
 namespace {
 
@@ -263,6 +264,18 @@ extern "C" void app_main(void) {
   wifiStationInit();
 
   bell::registerDefaultLogger();
+
+#if CONFIG_SNAPCLIENT_UDP_LOG_ENABLED
+  auto udpLogRes = snapclient::UdpLogBackend::create(
+      CONFIG_SNAPCLIENT_UDP_LOG_HOST, CONFIG_SNAPCLIENT_UDP_LOG_PORT);
+  if (udpLogRes) {
+    bell::registerLoggerBackend(std::move(*udpLogRes));
+  } else {
+    ESP_LOGW(TAG, "udp log backend failed: %s",
+             udpLogRes.error().message().c_str());
+  }
+#endif
+
   snapclient::scaffoldSelfCheck();
 
   static auto improvWifi = std::make_unique<snapclient::ImprovWifi>();

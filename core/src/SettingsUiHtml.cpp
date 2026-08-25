@@ -51,6 +51,15 @@ const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <label for="gainTertiary">Tertiary gain (dB)</label>
   <input id="gainTertiary" type="number" step="any">
 
+  <h1>Remote logging</h1>
+  <label for="logEnabled"><input id="logEnabled" type="checkbox" style="width:auto; margin-right:0.4rem;">Send logs over UDP</label>
+
+  <label for="logHost">Target host</label>
+  <input id="logHost" type="text">
+
+  <label for="logPort">Target port</label>
+  <input id="logPort" type="number" min="1" max="65535">
+
   <button type="submit">Save</button>
   <p id="status"></p>
 </form>
@@ -154,6 +163,9 @@ async function load() {
   document.getElementById('port').value = state.server.port;
   document.getElementById('flow').value = state.dsp.activeFlow;
   populateFlowFields(state.dsp.activeFlow);
+  document.getElementById('logEnabled').checked = state.logging.enabled;
+  document.getElementById('logHost').value = state.logging.udpHost;
+  document.getElementById('logPort').value = state.logging.udpPort;
 }
 
 document.getElementById('flow').addEventListener('change', (e) => {
@@ -178,6 +190,11 @@ document.getElementById('form').addEventListener('submit', async (e) => {
           gainTertiaryDb: parseFloat(document.getElementById('gainTertiary').value)
         }
       }
+    },
+    logging: {
+      enabled: document.getElementById('logEnabled').checked,
+      udpHost: document.getElementById('logHost').value,
+      udpPort: parseInt(document.getElementById('logPort').value, 10)
     }
   };
   const statusEl = document.getElementById('status');
