@@ -35,10 +35,6 @@
 
 #include "esp32_udp_logger.h"
 
-// Web socket server
-// #include "websocket_if.h"
-// #include "websocket_server.h"
-
 #include <sys/time.h>
 
 #include "driver/i2s_std.h"
@@ -1529,10 +1525,6 @@ void app_main(void) {
   #endif
 
   init_http_server_task();
-
-  // Enable websocket server
-  //  ESP_LOGI(TAG, "Setup ws server");
-  //  websocket_if_start();
 
   net_mdns_register(mdns_hostname);
 #ifdef CONFIG_SNAPCLIENT_SNTP_ENABLE
