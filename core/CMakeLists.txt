@@ -5,7 +5,7 @@ project(snapclient_core)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-file(GLOB SOURCES "src/*.cpp")
+file(GLOB_RECURSE SOURCES "src/*.cpp")
 
 set(BELL_DISABLE_MQTT ON CACHE BOOL "Unused by snapclient" FORCE)
 set(BELL_DISABLE_MBEDTLS ON CACHE BOOL "Unused by snapclient" FORCE)

@@ -1,5 +1,6 @@
 #include <bell/Logger.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -19,8 +20,22 @@
 #include "snapclient/SnapcastClient.h"
 #include "snapclient/SnapcastDiscovery.h"
 #include "snapclient/SyncEngine.h"
+#include "snapclient/tas5805m/Tas5805mDriver.h"
+#include "snapclient/tas5805m/Tas5805mSettings.h"
 
 namespace {
+
+// No I2C bus exists on a host - lets /api/dac/settings and /api/dac/faults
+// be exercised over HTTP without a real chip.
+class NullI2cBus : public snapclient::I2cBus {
+ public:
+  bool write(uint8_t, const uint8_t*, size_t) override { return true; }
+  bool writeThenRead(uint8_t, const uint8_t*, size_t, uint8_t* readBuf,
+                     size_t readLen) override {
+    std::fill(readBuf, readBuf + readLen, 0);
+    return true;
+  }
+};
 
 int64_t nowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -87,6 +102,15 @@ int runSnapcastTest(const std::string& host, uint16_t port,
     BELL_LOG(info, kLogTag, "settings applied: flow={} freqPrimaryHz={}",
              static_cast<int>(settings.activeFlow()),
              settings.flowParams(settings.activeFlow()).freqPrimaryHz);
+  };
+
+  NullI2cBus dacBus;
+  snapclient::Tas5805mDriver dacDriver(dacBus);
+  snapclient::Tas5805mSettings dacSettings(settingsStore);
+  control.registerDacRoutes(dacSettings, dacDriver);
+  control.onDacSettingsChanged = [&] {
+    BELL_LOG(info, kLogTag, "dac settings applied: analogGain={}",
+             dacSettings.analogGain());
   };
 
   auto controlListenRes = control.listen(controlPort);
@@ -238,5 +262,7 @@ int main(int argc, char** argv) {
 
   bool ok = snapclient::dspSmokeTest();
   ok = snapclient::settingsSmokeTest() && ok;
+  ok = snapclient::tas5805mDriverSmokeTest() && ok;
+  ok = snapclient::tas5805mSettingsSmokeTest() && ok;
   return ok ? 0 : 1;
 }

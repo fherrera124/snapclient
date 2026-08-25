@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <system_error>
 #include <vector>
@@ -12,6 +13,8 @@
 #include "snapclient/ControlSettings.h"
 #include "snapclient/DspProcessor.h"
 #include "snapclient/JsonFileSettingsStore.h"
+#include "snapclient/tas5805m/Tas5805mDriver.h"
+#include "snapclient/tas5805m/Tas5805mSettings.h"
 
 namespace snapclient {
 
@@ -37,6 +40,54 @@ struct FlowCase {
   const char* name;
   DspFilterParams params;
 };
+
+// Records every I2cBus transaction instead of talking to real hardware, so
+// Tas5805mDriver's register/book-page logic can be asserted against without
+// a chip. readValues feeds writeThenRead()'s read half in call order.
+class RecordingI2cBus : public I2cBus {
+ public:
+  std::vector<std::vector<uint8_t>> writes;
+  std::vector<std::vector<uint8_t>> reads;
+  std::vector<uint8_t> readValues;
+
+  bool write(uint8_t /*deviceAddr*/, const uint8_t* data,
+            size_t len) override {
+    writes.emplace_back(data, data + len);
+    return true;
+  }
+
+  bool writeThenRead(uint8_t /*deviceAddr*/, const uint8_t* writeData,
+                     size_t writeLen, uint8_t* readBuf,
+                     size_t readLen) override {
+    reads.emplace_back(writeData, writeData + writeLen);
+    for (size_t i = 0; i < readLen; i++) {
+      readBuf[i] = (readIndex_ < readValues.size()) ? readValues[readIndex_++]
+                                                     : 0;
+    }
+    return true;
+  }
+
+ private:
+  size_t readIndex_ = 0;
+};
+
+uint32_t swapEndian32ForTest(uint32_t val) {
+  return ((val & 0xFF) << 24) | ((val & 0xFF00) << 8) |
+         ((val & 0xFF0000) >> 8) | ((val >> 24) & 0xFF);
+}
+
+// Recomputes the Q9.23 encoding locally so expected bytes can be asserted
+// bit-exactly.
+uint32_t expectedQ9_23(float value) {
+  auto fixedVal = static_cast<int32_t>(value * static_cast<float>(1 << 23));
+  return swapEndian32ForTest(static_cast<uint32_t>(fixedVal));
+}
+
+std::vector<uint8_t> le32(uint32_t v) {
+  std::vector<uint8_t> out(4);
+  std::memcpy(out.data(), &v, 4);
+  return out;
+}
 }  // namespace
 
 bool dspSmokeTest() {
@@ -155,6 +206,216 @@ bool settingsSmokeTest() {
   fs::remove(path, ec);
 
   BELL_LOG(info, LOG_TAG, "settingsSmokeTest: {}", ok ? "PASS" : "FAIL");
+  return ok;
+}
+
+bool tas5805mDriverSmokeTest() {
+  bool allOk = true;
+
+  {
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setState(Tas5805mState::Play);
+    ok = ok && bus.writes.size() == 1 &&
+         bus.writes[0] == std::vector<uint8_t>{0x03, 0x03};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setState: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setDigitalVolume(0x30);
+    ok = ok && bus.writes.size() == 1 &&
+         bus.writes[0] == std::vector<uint8_t>{0x4c, 0x30};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setDigitalVolume: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setAnalogGain(5);
+    ok = ok && bus.writes.size() == 1 &&
+         bus.writes[0] == std::vector<uint8_t>{0x54, 0x05};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setAnalogGain: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    // Read-modify-write: DEVICE_CTRL_1 starts at 0x00, PBTL sets bit 2.
+    RecordingI2cBus bus;
+    bus.readValues = {0x00};
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setDacMode(Tas5805mDacMode::Pbtl);
+    ok = ok && bus.reads.size() == 1 &&
+         bus.reads[0] == std::vector<uint8_t>{0x02};
+    ok = ok && bus.writes.size() == 1 &&
+         bus.writes[0] == std::vector<uint8_t>{0x02, 0x04};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setDacMode: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    // DEVICE_CTRL_1 starts saturated (0xFF); Hybrid|384kHz should clear
+    // bits 0-1/4-6 then OR in mode=2, freq=0x10 -> 0x9E. BD freq writes
+    // ANA_CTRL_REGISTER outright (not read-modify-write).
+    RecordingI2cBus bus;
+    bus.readValues = {0xFF};
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setModulationMode(
+        Tas5805mModMode::Hybrid, Tas5805mSwFreq::Khz384, Tas5805mBdFreq::Khz100);
+    ok = ok && bus.reads.size() == 1 &&
+         bus.reads[0] == std::vector<uint8_t>{0x02};
+    ok = ok && bus.writes.size() == 2 &&
+         bus.writes[0] == std::vector<uint8_t>{0x02, 0x9E} &&
+         bus.writes[1] == std::vector<uint8_t>{0x53, 0x20};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setModulationMode: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    // Every mixer-gain write is wrapped in its own book5/page0x29 enter and
+    // book0/page0 restore (4 registers x (3 + 1 + 3) = 28 writes); only the
+    // 5-byte (reg + 4-byte gain) writes carry the actual routing data.
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setMixerMode(Tas5805mMixerMode::Stereo);
+    std::vector<std::vector<uint8_t>> dataWrites;
+    for (const auto& w : bus.writes) {
+      if (w.size() == 5) {
+        dataWrites.push_back(w);
+      }
+    }
+    ok = ok && bus.writes.size() == 28 && dataWrites.size() == 4;
+    if (ok) {
+      auto reg = [](uint8_t r, uint32_t v) {
+        std::vector<uint8_t> out{r};
+        auto bytes = le32(v);
+        out.insert(out.end(), bytes.begin(), bytes.end());
+        return out;
+      };
+      ok = dataWrites[0] == reg(0x18, 0x00008000) &&
+           dataWrites[1] == reg(0x24, 0x00008000) &&
+           dataWrites[2] == reg(0x20, 0x00000000) &&
+           dataWrites[3] == reg(0x1c, 0x00000000);
+    }
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setMixerMode: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.setChannelGain(Tas5805mChannel::Right, 6);
+    std::vector<std::vector<uint8_t>> dataWrites;
+    for (const auto& w : bus.writes) {
+      if (w.size() == 5) {
+        dataWrites.push_back(w);
+      }
+    }
+    ok = ok && bus.writes.size() == 7 && dataWrites.size() == 1 &&
+         dataWrites[0][0] == 0x28;
+    if (ok) {
+      float linear = powf(10.0f, 6.0f / 20.0f);
+      uint32_t expected = expectedQ9_23(linear);
+      auto expectedBytes = le32(expected);
+      ok = std::equal(dataWrites[0].begin() + 1, dataWrites[0].end(),
+                      expectedBytes.begin());
+    }
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest setChannelGain: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    RecordingI2cBus bus;
+    bus.readValues = {0x05, 0x44, 0x01, 0x04};
+    Tas5805mDriver driver(bus, 0x2D);
+    Tas5805mFaults faults;
+    bool ok = driver.getFaults(faults);
+    ok = ok && faults.rightOverCurrent && faults.rightDcFault &&
+         !faults.leftOverCurrent && !faults.leftDcFault;
+    ok = ok && faults.clockFault && faults.biquadWriteFailed &&
+         !faults.pvddUnderVoltage && !faults.pvddOverVoltage &&
+         !faults.otpCrcError;
+    ok = ok && faults.overTemperatureShutdown &&
+         faults.overTemperatureWarning;
+    ok = ok && faults.any();
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest getFaults: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  {
+    RecordingI2cBus bus;
+    Tas5805mDriver driver(bus, 0x2D);
+    bool ok = driver.clearFaults();
+    ok = ok && bus.writes.size() == 1 &&
+         bus.writes[0] == std::vector<uint8_t>{0x78, 0x80};
+    BELL_LOG(info, LOG_TAG, "tas5805mDriverSmokeTest clearFaults: {}",
+             ok ? "PASS" : "FAIL");
+    allOk = allOk && ok;
+  }
+
+  return allOk;
+}
+
+bool tas5805mSettingsSmokeTest() {
+  namespace fs = std::filesystem;
+  std::string path =
+      (fs::temp_directory_path() / "snapclient_tas5805m_settings_smoketest.json")
+          .string();
+  std::error_code ec;
+  fs::remove(path, ec);
+
+  bool ok = true;
+
+  {
+    JsonFileSettingsStore store(path);
+    Tas5805mSettings settings(store);
+    ok = settings.applyJson(
+             R"({"dac":{"analogGain":10,"dacMode":"pbtl",)"
+             R"("modulation":{"mode":"hybrid","swFreqHz":384000,)"
+             R"("bdFreqHz":100000},"mixerMode":"mono",)"
+             R"("channelGainL":-6,"channelGainR":6}})") &&
+         ok;
+    ok = (settings.analogGain() == 10) && ok;
+    ok = (settings.dacMode() == Tas5805mDacMode::Pbtl) && ok;
+    ok = (settings.modulationMode() == Tas5805mModMode::Hybrid) && ok;
+    ok = (settings.swFreq() == Tas5805mSwFreq::Khz384) && ok;
+    ok = (settings.bdFreq() == Tas5805mBdFreq::Khz100) && ok;
+    ok = (settings.mixerMode() == Tas5805mMixerMode::Mono) && ok;
+    ok = (settings.channelGainLeft() == -6) && ok;
+    ok = (settings.channelGainRight() == 6) && ok;
+  }
+
+  {
+    // Fresh store/settings against the same file: verifies persistence
+    // across reconstruction.
+    JsonFileSettingsStore store(path);
+    Tas5805mSettings settings(store);
+    ok = (settings.analogGain() == 10) && ok;
+    ok = (settings.dacMode() == Tas5805mDacMode::Pbtl) && ok;
+    ok = (settings.mixerMode() == Tas5805mMixerMode::Mono) && ok;
+    ok = (settings.channelGainLeft() == -6) && ok;
+
+    ok = !settings.applyJson(R"({"dac":{"analogGain":32}})") && ok;
+    ok = !settings.applyJson(R"({"dac":{"dacMode":"nope"}})") && ok;
+    ok = !settings.applyJson(R"({"dac":{"channelGainL":25}})") && ok;
+    ok = (settings.analogGain() == 10) && ok;
+  }
+
+  fs::remove(path, ec);
+
+  BELL_LOG(info, LOG_TAG, "tas5805mSettingsSmokeTest: {}",
+           ok ? "PASS" : "FAIL");
   return ok;
 }
 
