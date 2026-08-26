@@ -7,12 +7,6 @@
 [submodule "components/opus/opus"]
 	path = components/opus/opus
 	url = https://github.com/xiph/opus
-[submodule "components/improv_wifi/Improv-WiFi-Library"]
-	path = components/improv_wifi/Improv-WiFi-Library
-	url = https://github.com/jnthas/Improv-WiFi-Library.git
-[submodule "udp_logger"]
-	path = components/udp_logger
-	url = https://github.com/AchimPieters/esp32-udp-logger.git
 [submodule "external/bell"]
 	path = external/bell
 	url = https://github.com/fherrera124/bell.git
