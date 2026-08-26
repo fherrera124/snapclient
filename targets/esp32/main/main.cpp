@@ -1,9 +1,9 @@
 #include <bell/Logger.h>
 #include <bell/utils/Task.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstring>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -23,6 +23,7 @@
 #include "AudioSinkI2S.h"
 #include "ImprovWifi.h"
 #include "NvsSettingsStore.h"
+#include "PcmChunkPool.h"
 #include "snapclient/ControlServer.h"
 #include "snapclient/ControlSettings.h"
 #include "snapclient/Core.h"
@@ -37,6 +38,23 @@ const char* TAG = "snapclient";
 
 std::atomic<bool> wifiConnected{false};
 
+// 15 slots of 4096 bytes (~61KB, ~300ms of 48kHz stereo S16 audio),
+// pre-allocated once at startup instead of per-chunk to avoid heap
+// fragmentation under sustained ~50 allocs/frees per second.
+//
+// PcmChunkPool prefers IRAM (a pool separate from the DRAM heap
+// Opus/DSP/WiFi/HTTP draw from) but falls back to DRAM when IRAM has no
+// room - this board's IRAM is fully committed elsewhere, so this is
+// sized against DRAM headroom; sizing it larger starves those other
+// allocations.
+constexpr size_t kPcmPoolSlotCount = 15;
+constexpr size_t kPcmPoolSlotBytes = 4096;
+
+// Snapcast's Opus stream here always encodes 20ms frames at 48kHz -
+// 960 samples per channel. Used to size the silence placeholder written
+// in place of a chunk the pool couldn't hold.
+constexpr size_t kFramesPerChunk = 960;
+
 int64_t nowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -45,7 +63,7 @@ int64_t nowUs() {
 
 struct QueuedChunk {
   int64_t serverTimeUs;
-  std::vector<int16_t> pcm;
+  snapclient::PcmChunkPool::PooledBuffer pcm;
 };
 
 }  // namespace
@@ -128,6 +146,7 @@ class SnapclientTask : public bell::Task {
         static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MUTE_GPIO);
     snapclient::AudioSinkI2S i2sSink(sinkConfig);
 
+    snapclient::PcmChunkPool pcmPool(kPcmPoolSlotCount, kPcmPoolSlotBytes);
     std::mutex queueMutex;
     std::deque<QueuedChunk> queue;
 
@@ -183,12 +202,22 @@ class SnapclientTask : public bell::Task {
       if (!sync.latencyReady()) {
         return;
       }
+      std::lock_guard<std::mutex> lock(queueMutex);
+      if (queue.size() >= kPcmPoolSlotCount) {
+        BELL_LOG(warn, kLogTag, "dropping pcm chunk: queue full");
+        return;
+      }
+
       QueuedChunk item;
       item.serverTimeUs = serverTimeUs;
-      item.pcm.resize(len / sizeof(int16_t));
-      std::memcpy(item.pcm.data(), pcm, len);
-
-      std::lock_guard<std::mutex> lock(queueMutex);
+      item.pcm = pcmPool.acquire(pcm, len);
+      // Pool exhaustion queues a silent placeholder (item.pcm left empty)
+      // instead of dropping the chunk outright - a dropped chunk leaves a
+      // gap in the played frame count that the server's clock doesn't
+      // have, which is what was driving SyncEngine's runaway resyncs.
+      if (!item.pcm) {
+        BELL_LOG(warn, kLogTag, "pool exhausted, queueing silence");
+      }
       queue.push_back(std::move(item));
     };
 
@@ -196,6 +225,12 @@ class SnapclientTask : public bell::Task {
              config.port);
 
     std::vector<int16_t> scratch;
+    const std::vector<int16_t> silenceInput(kFramesPerChunk * 2, 0);
+    int64_t lastQueueLogUs = 0;
+    int64_t lastTimingLogUs = 0;
+    int64_t dspSumUs = 0, dspMaxUs = 0;
+    int64_t i2sSumUs = 0, i2sMaxUs = 0;
+    size_t dspSamples = 0, i2sSamples = 0;
     while (true) {
       QueuedChunk item;
       size_t queueDepth = 0;
@@ -209,6 +244,14 @@ class SnapclientTask : public bell::Task {
           queueDepth = queue.size() + 1;
         }
       }
+
+      const int64_t logNow = nowUs();
+      if (logNow - lastQueueLogUs >= 1000000) {
+        lastQueueLogUs = logNow;
+        BELL_LOG(info, kLogTag, "queue depth={} freeHeap={}", queueDepth,
+                 esp_get_free_heap_size());
+      }
+
       if (queueDepth == 0) {
         // At CONFIG_FREERTOS_HZ=100 (10ms/tick), anything under 10ms
         // rounds down to 0 ticks - vTaskDelay(0) doesn't actually block,
@@ -218,12 +261,28 @@ class SnapclientTask : public bell::Task {
         continue;
       }
 
-      const size_t frames = item.pcm.size() / 2;
-      scratch.resize(item.pcm.size());
-      dsp.process(reinterpret_cast<const std::byte*>(item.pcm.data()),
-                 item.pcm.size() * sizeof(int16_t),
+      constexpr size_t kBytesPerFrame = 2 * sizeof(int16_t);
+      const std::byte* dspInput;
+      size_t dspInputLen;
+      size_t frames;
+      if (item.pcm) {
+        dspInput = item.pcm.data();
+        dspInputLen = item.pcm.size();
+        frames = dspInputLen / kBytesPerFrame;
+      } else {
+        dspInput = reinterpret_cast<const std::byte*>(silenceInput.data());
+        dspInputLen = silenceInput.size() * sizeof(int16_t);
+        frames = kFramesPerChunk;
+      }
+      scratch.resize(dspInputLen / sizeof(int16_t));
+      const int64_t dspStartUs = nowUs();
+      dsp.process(dspInput, dspInputLen,
                  reinterpret_cast<std::byte*>(scratch.data()),
                  scratch.size() * sizeof(int16_t), sampleRate);
+      const int64_t dspUs = nowUs() - dspStartUs;
+      dspSumUs += dspUs;
+      dspMaxUs = std::max(dspMaxUs, dspUs);
+      dspSamples++;
 
       for (;;) {
         auto result = sync.evaluate(item.serverTimeUs, nowUs(), queueDepth);
@@ -235,7 +294,6 @@ class SnapclientTask : public bell::Task {
         if (result.decision == snapclient::PlayDecision::Play) {
           chunksPlayed++;
 
-          constexpr size_t kBytesPerFrame = 2 * sizeof(int16_t);
           const auto* writeStart =
               reinterpret_cast<const std::byte*>(scratch.data());
           size_t writeLen = scratch.size() * sizeof(int16_t);
@@ -246,11 +304,16 @@ class SnapclientTask : public bell::Task {
           if (result.frameAdjustment < 0 && writeLen >= kBytesPerFrame) {
             writeLen -= kBytesPerFrame;
           }
+          const int64_t i2sStartUs = nowUs();
           i2sSink.write(writeStart, writeLen);
           if (result.frameAdjustment > 0 && writeLen >= kBytesPerFrame) {
             i2sSink.write(writeStart + writeLen - kBytesPerFrame,
                           kBytesPerFrame);
           }
+          const int64_t i2sUs = nowUs() - i2sStartUs;
+          i2sSumUs += i2sUs;
+          i2sMaxUs = std::max(i2sMaxUs, i2sUs);
+          i2sSamples++;
 
           if (result.frameAdjustment != 0) {
             corrections++;
@@ -260,6 +323,23 @@ class SnapclientTask : public bell::Task {
           chunksDropped++;
         }
         break;
+      }
+
+      const int64_t timingLogNow = nowUs();
+      if (timingLogNow - lastTimingLogUs >= 1000000) {
+        lastTimingLogUs = timingLogNow;
+        BELL_LOG(info, kLogTag,
+                 "loop timing: dspAvg={} dspMax={} n={} | i2sAvg={} "
+                 "i2sMax={} n={}",
+                 dspSamples ? dspSumUs / dspSamples : 0, dspMaxUs,
+                 dspSamples, i2sSamples ? i2sSumUs / i2sSamples : 0,
+                 i2sMaxUs, i2sSamples);
+        dspSumUs = 0;
+        dspMaxUs = 0;
+        dspSamples = 0;
+        i2sSumUs = 0;
+        i2sMaxUs = 0;
+        i2sSamples = 0;
       }
 
       if ((chunksPlayed + chunksDropped) % 50 == 0) {
