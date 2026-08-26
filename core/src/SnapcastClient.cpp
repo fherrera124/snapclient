@@ -36,7 +36,8 @@ std::optional<bell::audio::SampleRate> toSampleRate(uint32_t hz) {
 }  // namespace
 
 SnapcastClient::SnapcastClient(Config config)
-    : bell::Task("snapcast_client", 8192, /*espPriority=*/10),
+    : bell::Task("snapcast_client", 8192, /*espPriority=*/10,
+                bell::TaskCore::CoreAny, /*espStackOnPsram=*/false),
       config_(std::move(config)) {
   startTask();
 }
@@ -123,6 +124,8 @@ bool SnapcastClient::connectAndHandshake() {
   base.size = static_cast<uint32_t>(payload.size());
 
   if (!writeAll(base.serialize()) || !writeAll(payload)) {
+    BELL_LOG(warn, LOG_TAG, "sending hello to {}:{} failed", config_.host,
+             config_.port);
     return false;
   }
 
@@ -135,10 +138,12 @@ bool SnapcastClient::connectAndHandshake() {
 bool SnapcastClient::readAndDispatchOne() {
   std::array<std::byte, BaseMessage::kWireSize> headerBuf{};
   if (!readExact(headerBuf.data(), headerBuf.size())) {
+    BELL_LOG(warn, LOG_TAG, "reading message header failed");
     return false;
   }
   auto base = BaseMessage::parse(headerBuf.data(), headerBuf.size());
   if (!base) {
+    BELL_LOG(warn, LOG_TAG, "malformed message header");
     return false;
   }
   const int64_t receivedAt = nowUs();
@@ -147,6 +152,7 @@ bool SnapcastClient::readAndDispatchOne() {
 
   std::vector<std::byte> payload(base->size);
   if (base->size > 0 && !readExact(payload.data(), payload.size())) {
+    BELL_LOG(warn, LOG_TAG, "reading message payload failed");
     return false;
   }
 
