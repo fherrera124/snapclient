@@ -1,6 +1,7 @@
 #include "AudioSinkI2S.h"
 
-#include <vector>
+#include <algorithm>
+#include <array>
 
 #include "bell/Logger.h"
 #include "freertos/FreeRTOS.h"
@@ -10,6 +11,7 @@ namespace snapclient {
 namespace {
 constexpr uint32_t kPrimeSilenceMs = 100;
 constexpr size_t kBytesPerFrame = 2 /*channels*/ * sizeof(int16_t);
+constexpr size_t kSilenceChunkFrames = 256;
 }  // namespace
 
 AudioSinkI2S::AudioSinkI2S(Config config) : config_(config) {
@@ -49,7 +51,11 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
 
   i2s_chan_config_t chanConfig =
       I2S_CHANNEL_DEFAULT_CONFIG(config_.port, I2S_ROLE_MASTER);
-  chanConfig.dma_desc_num = 2;
+  // 4 descriptors (~85ms of hardware buffering at 48kHz) instead of 2
+  // (~43ms) - i2s_channel_write() blocks until the DMA queue has room, and
+  // 2 descriptors left too little slack to absorb scheduling jitter
+  // (measured write() spikes up to ~52ms against a 20ms/chunk budget).
+  chanConfig.dma_desc_num = 4;
   chanConfig.dma_frame_num = 1023;
   chanConfig.auto_clear = true;
   esp_err_t err = i2s_new_channel(&chanConfig, &txChan_, nullptr);
@@ -98,10 +104,18 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
 }
 
 void AudioSinkI2S::primeSilence() {
-  const size_t silenceFrames = currentSampleRate_ * kPrimeSilenceMs / 1000;
-  std::vector<std::byte> silence(silenceFrames * kBytesPerFrame,
-                                 std::byte{0});
-  write(silence.data(), silence.size());
+  // Written in small fixed-size chunks off the stack, not one big heap
+  // buffer - this runs before playback starts, when a single large
+  // contiguous allocation is least likely to find room next to whatever
+  // else (WiFi, HTTP, the PCM chunk pool) has already claimed heap space.
+  std::array<std::byte, kSilenceChunkFrames * kBytesPerFrame> silenceChunk{};
+  size_t framesRemaining = currentSampleRate_ * kPrimeSilenceMs / 1000;
+  while (framesRemaining > 0) {
+    const size_t framesThisWrite =
+        std::min(framesRemaining, kSilenceChunkFrames);
+    write(silenceChunk.data(), framesThisWrite * kBytesPerFrame);
+    framesRemaining -= framesThisWrite;
+  }
 }
 
 void AudioSinkI2S::write(const std::byte* pcm, size_t len) {
