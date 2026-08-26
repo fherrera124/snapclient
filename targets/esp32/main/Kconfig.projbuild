@@ -37,18 +37,8 @@ menu "Snapclient Configuration"
         int "Snapserver port"
         default 1704
 
-    config SNAPCLIENT_UDP_LOG_ENABLED
-        bool "Send logs over UDP"
-        default n
-
-    config SNAPCLIENT_UDP_LOG_HOST
-        string "UDP log target host"
-        default "192.168.1.1"
-        depends on SNAPCLIENT_UDP_LOG_ENABLED
-
-    config SNAPCLIENT_UDP_LOG_PORT
-        int "UDP log target port"
-        default 9999
-        depends on SNAPCLIENT_UDP_LOG_ENABLED
+    config SNAPCLIENT_CONTROL_PORT
+        int "Control server (settings HTTP API) port"
+        default 8080
 
 endmenu

@@ -21,6 +21,9 @@
 
 #include "AudioSinkI2S.h"
 #include "ImprovWifi.h"
+#include "NvsSettingsStore.h"
+#include "snapclient/ControlServer.h"
+#include "snapclient/ControlSettings.h"
 #include "snapclient/Core.h"
 #include "snapclient/DspProcessor.h"
 #include "snapclient/SnapcastClient.h"
@@ -47,8 +50,7 @@ struct QueuedChunk {
 // Network receive (SnapcastClient's own task) and playback pacing (this
 // task) run on separate threads, connected by a queue, so evaluate()'s
 // WaitMore decisions can re-check the same chunk against real elapsed
-// time. No settings/discovery/HTTP control here - server host/port come
-// from Kconfig.
+// time.
 class SnapclientTask : public bell::Task {
  public:
   // espStackOnPsram=false: no assumption that the target board has PSRAM.
@@ -70,6 +72,47 @@ class SnapclientTask : public bell::Task {
     bell::audio::SampleRate sampleRate = bell::audio::SampleRate::SR_44100HZ;
     int32_t bufferMs = 0;
 
+    snapclient::NvsSettingsStore settingsStore;
+    snapclient::ControlSettings settings(settingsStore);
+    snapclient::ControlServer control(settings);
+
+    dsp.switchFlow(settings.activeFlow());
+    dsp.setParams(settings.activeFlow(),
+                 settings.flowParams(settings.activeFlow()));
+
+    snapclient::UdpLogBackend* udpLogBackend = nullptr;
+    auto applyUdpLogSettings = [&] {
+      if (udpLogBackend) {
+        bell::unregisterLoggerBackend(udpLogBackend);
+        udpLogBackend = nullptr;
+      }
+      if (settings.udpLogEnabled()) {
+        auto backendRes = snapclient::UdpLogBackend::create(
+            settings.udpLogHost(), settings.udpLogPort());
+        if (backendRes) {
+          udpLogBackend = backendRes->get();
+          bell::registerLoggerBackend(std::move(*backendRes));
+        } else {
+          BELL_LOG(warn, kLogTag, "udp log backend failed: {}",
+                   backendRes.error().message());
+        }
+      }
+    };
+    applyUdpLogSettings();
+
+    control.onSettingsChanged = [&] {
+      dsp.switchFlow(settings.activeFlow());
+      dsp.setParams(settings.activeFlow(),
+                    settings.flowParams(settings.activeFlow()));
+      applyUdpLogSettings();
+    };
+
+    auto controlListenRes = control.listen(CONFIG_SNAPCLIENT_CONTROL_PORT);
+    if (!controlListenRes) {
+      BELL_LOG(error, kLogTag, "control server listen failed: {}",
+               controlListenRes.error().message());
+    }
+
     snapclient::AudioSinkI2S::Config sinkConfig;
     sinkConfig.bclkPin =
         static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_BCLK_GPIO);
@@ -90,8 +133,13 @@ class SnapclientTask : public bell::Task {
     size_t corrections = 0;
 
     snapclient::SnapcastClient::Config config;
-    config.host = CONFIG_SNAPCLIENT_SERVER_HOST;
-    config.port = CONFIG_SNAPCLIENT_SERVER_PORT;
+    if (!settings.serverHost().empty()) {
+      config.host = settings.serverHost();
+      config.port = settings.serverPort();
+    } else {
+      config.host = CONFIG_SNAPCLIENT_SERVER_HOST;
+      config.port = CONFIG_SNAPCLIENT_SERVER_PORT;
+    }
     snapclient::SnapcastClient client(config);
 
     client.onServerSettings = [&](const snapclient::ServerSettings& s) {
@@ -264,17 +312,6 @@ extern "C" void app_main(void) {
   wifiStationInit();
 
   bell::registerDefaultLogger();
-
-#if CONFIG_SNAPCLIENT_UDP_LOG_ENABLED
-  auto udpLogRes = snapclient::UdpLogBackend::create(
-      CONFIG_SNAPCLIENT_UDP_LOG_HOST, CONFIG_SNAPCLIENT_UDP_LOG_PORT);
-  if (udpLogRes) {
-    bell::registerLoggerBackend(std::move(*udpLogRes));
-  } else {
-    ESP_LOGW(TAG, "udp log backend failed: %s",
-             udpLogRes.error().message().c_str());
-  }
-#endif
 
   snapclient::scaffoldSelfCheck();
 
