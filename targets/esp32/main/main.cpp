@@ -1,6 +1,7 @@
 #include <bell/Logger.h>
 #include <bell/utils/Task.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <deque>
@@ -33,6 +34,8 @@
 namespace {
 
 const char* TAG = "snapclient";
+
+std::atomic<bool> wifiConnected{false};
 
 int64_t nowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -139,6 +142,13 @@ class SnapclientTask : public bell::Task {
     } else {
       config.host = CONFIG_SNAPCLIENT_SERVER_HOST;
       config.port = CONFIG_SNAPCLIENT_SERVER_PORT;
+    }
+    if (!wifiConnected) {
+      BELL_LOG(info, kLogTag, "waiting for WiFi before connecting to {}:{}",
+               config.host, config.port);
+      while (!wifiConnected) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      }
     }
     snapclient::SnapcastClient client(config);
 
@@ -273,9 +283,11 @@ void onWifiEvent(void* /*arg*/, esp_event_base_t eventBase, int32_t eventId,
     esp_wifi_connect();
   } else if (eventBase == WIFI_EVENT &&
             eventId == WIFI_EVENT_STA_DISCONNECTED) {
+    wifiConnected = false;
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_wifi_connect();
   } else if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_GOT_IP) {
+    wifiConnected = true;
     ESP_LOGI(TAG, "WiFi got IP");
   }
 }

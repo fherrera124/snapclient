@@ -1,6 +1,5 @@
 #include "ImprovWifi.h"
 
-#include <cstdio>
 #include <cstring>
 
 #include "driver/uart.h"
@@ -28,16 +27,30 @@ ImprovWifi::ImprovWifi()
       USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
   usb_serial_jtag_driver_install(&cfg);
 #endif
+  esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &onWifiEvent, this);
+  esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &onWifiEvent, this);
   startTask();
 }
 
 ImprovWifi::~ImprovWifi() {
   stopTask();
+  esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &onWifiEvent);
+  esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &onWifiEvent);
 #if CONFIG_ESP_CONSOLE_UART_DEFAULT || CONFIG_ESP_CONSOLE_UART_CUSTOM
   uart_driver_delete(static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM));
 #elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
   usb_serial_jtag_driver_uninstall();
 #endif
+}
+
+void ImprovWifi::onWifiEvent(void* arg, esp_event_base_t base, int32_t id,
+                             void* /*data*/) {
+  auto* self = static_cast<ImprovWifi*>(arg);
+  if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+    self->connected_ = true;
+  } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    self->connected_ = false;
+  }
 }
 
 void ImprovWifi::taskLoop() {
@@ -185,6 +198,13 @@ bool ImprovWifi::connectWifi(const std::string& ssid,
       password.size() >= sizeof(config.sta.password)) {
     return false;
   }
+  // esp_wifi_set_config() rejects the call outright ("sta is connecting,
+  // cannot set config") if the station is mid-connection-attempt with the
+  // previous credentials - disconnect first to force it out of that state
+  // before touching the config.
+  connected_ = false;
+  esp_wifi_disconnect();
+
   esp_wifi_get_config(WIFI_IF_STA, &config);
   std::memset(config.sta.ssid, 0, sizeof(config.sta.ssid));
   std::memset(config.sta.password, 0, sizeof(config.sta.password));
@@ -194,14 +214,12 @@ bool ImprovWifi::connectWifi(const std::string& ssid,
     return false;
   }
 
-  esp_wifi_disconnect();
   if (esp_wifi_connect() != ESP_OK) {
     return false;
   }
 
-  wifi_ap_record_t apInfo;
   for (int attempt = 0; attempt < 20; attempt++) {
-    if (esp_wifi_sta_get_ap_info(&apInfo) == ESP_OK) {
+    if (connected_) {
       return true;
     }
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -210,8 +228,7 @@ bool ImprovWifi::connectWifi(const std::string& ssid,
 }
 
 bool ImprovWifi::isConnected() {
-  wifi_ap_record_t apInfo;
-  return esp_wifi_sta_get_ap_info(&apInfo) == ESP_OK;
+  return connected_;
 }
 
 std::string ImprovWifi::deviceUrl() {

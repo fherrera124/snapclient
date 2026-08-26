@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -8,6 +9,8 @@
 #include <vector>
 
 #include <bell/utils/Task.h>
+
+#include "esp_event.h"
 
 namespace snapclient {
 
@@ -77,6 +80,13 @@ class ImprovWifi : public bell::Task {
   std::string deviceUrl();
   std::vector<std::string> deviceInfoFields();
   void sendWifiNetworks();
+
+  // esp_wifi_sta_get_ap_info() logs a warning every time it's asked about
+  // a station that isn't connected yet, so connection state is tracked
+  // from WIFI_EVENT/IP_EVENT here.
+  std::atomic<bool> connected_{false};
+  static void onWifiEvent(void* arg, esp_event_base_t base, int32_t id,
+                          void* data);
 };
 
 }  // namespace snapclient
