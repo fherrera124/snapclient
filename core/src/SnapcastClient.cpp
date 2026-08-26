@@ -8,6 +8,10 @@
 #include <bell/Logger.h>
 #include <tcb/span.hpp>
 
+#ifdef ESP_PLATFORM
+#include <esp_system.h>
+#endif
+
 namespace snapclient {
 
 namespace {
@@ -36,7 +40,7 @@ std::optional<bell::audio::SampleRate> toSampleRate(uint32_t hz) {
 }  // namespace
 
 SnapcastClient::SnapcastClient(Config config)
-    : bell::Task("snapcast_client", 8192, /*espPriority=*/10,
+    : bell::Task("snapcast_client", 32768, /*espPriority=*/4,
                 bell::TaskCore::CoreAny, /*espStackOnPsram=*/false),
       config_(std::move(config)) {
   startTask();
@@ -229,12 +233,21 @@ bool SnapcastClient::handleCodecHeader(const std::byte* payload, size_t len) {
                                    *sampleRate);
 
   if (activeCodec_ == Codec::Opus) {
-    auto setupRes = opusCodec_.setupDecode(pcmFormat_, bell::audio::OpusConfig{});
+    // bufferSize default (100ms) is 5x what a single 20ms/960-sample
+    // decode call ever writes (samplesPerPacket defaults to 960 too) -
+    // this wastes ~15KB of the tmpBuffer that's never touched.
+    bell::audio::OpusConfig opusConfig;
+    opusConfig.bufferSize = 4096;
+    auto setupRes = opusCodec_.setupDecode(pcmFormat_, opusConfig);
     if (!setupRes) {
       BELL_LOG(error, LOG_TAG, "opus setupDecode failed: {}",
                setupRes.error());
       return false;
     }
+#ifdef ESP_PLATFORM
+    BELL_LOG(info, LOG_TAG, "opus setupDecode done: freeHeap={}",
+             esp_get_free_heap_size());
+#endif
   }
 
   receivedCodecHeader_ = true;
