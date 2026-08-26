@@ -25,6 +25,11 @@ class SlidingMedian {
 
   bool full() const { return order_.size() >= windowSize_; }
 
+  void clear() {
+    order_.clear();
+    sorted_.clear();
+  }
+
   T median() const {
     auto it = sorted_.begin();
     std::advance(it, sorted_.size() / 2);

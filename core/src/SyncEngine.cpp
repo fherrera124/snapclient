@@ -2,7 +2,13 @@
 
 #include <cmath>
 
+#include <bell/Logger.h>
+
 namespace snapclient {
+
+namespace {
+const char* kLogTag = "SyncEngine";
+}  // namespace
 
 SyncEngine::SyncEngine()
     : timeFilter_(0.01, 0.0, 1.001, 0.75, 100, 2.0),
@@ -15,6 +21,8 @@ void SyncEngine::onSettingsChanged(int32_t bufferMs, int32_t dacLatencyMs,
   dacLatencyMs_ = dacLatencyMs;
   sampleRate_ = sampleRate;
   playing_ = false;
+  shortMedian_.clear();
+  miniMedian_.clear();
 }
 
 void SyncEngine::insertLatencySample(int64_t offsetUs, int64_t maxErrorUs,
@@ -28,6 +36,8 @@ bool SyncEngine::latencyReady() const {
 
 void SyncEngine::reset() {
   playing_ = false;
+  shortMedian_.clear();
+  miniMedian_.clear();
 }
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
@@ -44,6 +54,10 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
       return {PlayDecision::WaitMore, -age, 0, false};
     }
     if (age > kInitialSyncToleranceUs) {
+      BELL_LOG(warn, kLogTag,
+               "initial sync drop: age={} diffToServer={} bufferUs={} "
+               "dacLatencyUs={}",
+               age, diffToServer, bufferUs, dacLatencyUs);
       return {PlayDecision::DropLate, 0, 0, false};
     }
     playbackStartTimeUs_ = nowUs;
@@ -54,6 +68,8 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
 
   if (queueDepth == 0) {
     playing_ = false;
+    shortMedian_.clear();
+    miniMedian_.clear();
     return {PlayDecision::DropLate, 0, 0, true};
   }
 
@@ -67,7 +83,13 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
   miniMedian_.insert(age);
 
   if (shortMedian_.full() && std::abs(shortMedian_.median()) > kHardResyncThresholdUs) {
+    BELL_LOG(warn, kLogTag,
+             "hard resync: age={} shortMedian={} miniMedian={} "
+             "diffToServer={}",
+             age, shortMedian_.median(), miniMedian_.median(), diffToServer);
     playing_ = false;
+    shortMedian_.clear();
+    miniMedian_.clear();
     return {PlayDecision::DropLate, 0, 0, true};
   }
 
