@@ -136,6 +136,10 @@ bool SnapcastClient::connectAndHandshake() {
   receivedCodecHeader_ = false;
   activeCodec_ = Codec::None;
   lastTimeSyncSentUs_ = 0;
+  pingIntervalUs_ = 10000;
+  if (onConnected) {
+    onConnected();
+  }
   return true;
 }
 

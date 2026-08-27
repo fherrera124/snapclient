@@ -171,6 +171,8 @@ class SnapclientTask : public bell::Task {
     }
     snapclient::SnapcastClient client(config);
 
+    client.onConnected = [&] { sync.reset(); };
+
     client.onServerSettings = [&](const snapclient::ServerSettings& s) {
       bufferMs = s.bufferMs;
       sync.onSettingsChanged(bufferMs, 0, static_cast<uint32_t>(sampleRate));

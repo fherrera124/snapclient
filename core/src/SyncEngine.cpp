@@ -38,6 +38,7 @@ void SyncEngine::reset() {
   playing_ = false;
   shortMedian_.clear();
   miniMedian_.clear();
+  timeFilter_.reset();
 }
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
