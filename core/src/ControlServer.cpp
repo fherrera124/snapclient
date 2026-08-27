@@ -27,15 +27,20 @@ bell::Result<> ControlServer::listen(uint16_t port) {
 }
 
 void ControlServer::registerRoutes() {
-  httpServer_.registerGet(
-      "/",
-      [](const std::unique_ptr<bell::http::Reader>& /*request*/,
-        const std::unique_ptr<bell::http::Writer>& response,
-        const std::unordered_map<std::string, std::string>& /*params*/) {
-        (void)response->writeResponseWithBody(
-            200, {{"Content-Type", "text/html; charset=utf-8"}},
-            kSettingsUiHtml);
-      });
+  auto registerHtmlPage = [this](const char* uri, const char* html) {
+    httpServer_.registerGet(
+        uri,
+        [html](const std::unique_ptr<bell::http::Reader>& /*request*/,
+              const std::unique_ptr<bell::http::Writer>& response,
+              const std::unordered_map<std::string, std::string>& /*params*/) {
+          (void)response->writeResponseWithBody(
+              200, {{"Content-Type", "text/html; charset=utf-8"}}, html);
+        });
+  };
+  registerHtmlPage("/", kNavShellHtml);
+  registerHtmlPage("/general-settings.html", kGeneralSettingsHtml);
+  registerHtmlPage("/dsp-settings.html", kDspSettingsHtml);
+  registerHtmlPage("/dac-settings.html", kDacSettingsHtml);
 
   httpServer_.registerGet(
       "/api/settings",

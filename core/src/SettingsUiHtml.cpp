@@ -2,23 +2,63 @@
 
 namespace snapclient {
 
-const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
+const char kNavShellHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>snapclient settings</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.25rem; }
+  body { font-family: system-ui, sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; }
+  nav { display: flex; border-bottom: 1px solid #ccc; }
+  nav h1 { font-size: 1.1rem; padding: 0.75rem 1rem; margin: 0; white-space: nowrap; }
+  nav a { padding: 0.75rem 1rem; text-decoration: none; color: #333; }
+  nav a.active { border-bottom: 2px solid #333; font-weight: 600; }
+  #content { flex: 1; border: none; width: 100%; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>snapclient</h1>
+  <a href="#" class="navLink active" data-page="general-settings.html">General</a>
+  <a href="#" class="navLink" data-page="dsp-settings.html">DSP</a>
+  <a href="#" class="navLink" id="dacTab" data-page="dac-settings.html" style="display:none">DAC / EQ</a>
+</nav>
+<iframe id="content" src="general-settings.html"></iframe>
+<script>
+document.querySelectorAll('.navLink').forEach((link) => {
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    document.querySelectorAll('.navLink').forEach((l) => l.classList.remove('active'));
+    link.classList.add('active');
+    document.getElementById('content').src = link.dataset.page;
+  });
+});
+
+// registerDacRoutes is opt-in server-side - only show the tab if this
+// target actually called it.
+fetch('/api/dac/settings').then((res) => {
+  if (res.ok) {
+    document.getElementById('dacTab').style.display = '';
+  }
+});
+</script>
+</body>
+</html>
+)HTMLPAGE";
+
+const char kGeneralSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>General settings</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 1.5rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.1rem; }
   label { display: block; margin-top: 0.75rem; font-weight: 600; }
-  input, select { width: 100%; padding: 0.4rem; margin-top: 0.25rem; box-sizing: border-box; }
-  #hint { font-size: 0.85rem; color: #555; margin-top: 0.5rem; }
+  input { width: 100%; padding: 0.4rem; margin-top: 0.25rem; box-sizing: border-box; }
   button { margin-top: 1rem; padding: 0.5rem 1rem; }
   #status.ok { color: green; }
   #status.error { color: red; }
-  .eqBandRow { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.4rem; }
-  .eqBandRow span { width: 4.5rem; font-size: 0.85rem; }
-  .eqBandRow input { margin-top: 0; }
   .hostRow { display: flex; gap: 0.5rem; }
   .hostRow input { flex: 1; }
   .hostRow button { margin-top: 0; white-space: nowrap; }
@@ -28,7 +68,7 @@ const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>snapclient settings</h1>
+<h1>Snapcast server</h1>
 <form id="form">
   <label for="host">Server host</label>
   <div class="hostRow">
@@ -40,7 +80,111 @@ const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <label for="port">Server port</label>
   <input id="port" type="number" min="1" max="65535" required>
 
-  <label for="flow">DSP flow</label>
+  <h1>Remote logging</h1>
+  <label for="logEnabled"><input id="logEnabled" type="checkbox" style="width:auto; margin-right:0.4rem;">Send logs over UDP</label>
+
+  <label for="logHost">Target host</label>
+  <input id="logHost" type="text">
+
+  <label for="logPort">Target port</label>
+  <input id="logPort" type="number" min="1" max="65535">
+
+  <button type="submit">Save</button>
+  <p id="status"></p>
+</form>
+
+<script>
+async function load() {
+  const res = await fetch('/api/settings');
+  const state = await res.json();
+  document.getElementById('host').value = state.server.host;
+  document.getElementById('port').value = state.server.port;
+  document.getElementById('logEnabled').checked = state.logging.enabled;
+  document.getElementById('logHost').value = state.logging.udpHost;
+  document.getElementById('logPort').value = state.logging.udpPort;
+}
+
+document.getElementById('detectBtn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('detectStatus');
+  statusEl.textContent = 'Searching...';
+  statusEl.className = '';
+  try {
+    const res = await fetch('/api/discover');
+    if (!res.ok) {
+      const err = await res.json();
+      statusEl.textContent = 'Not found: ' + (err.error || res.status);
+      statusEl.className = 'error';
+      return;
+    }
+    const found = await res.json();
+    document.getElementById('host').value = found.host;
+    document.getElementById('port').value = found.port;
+    statusEl.textContent = `Found ${found.host}:${found.port}`;
+    statusEl.className = 'ok';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.className = 'error';
+  }
+});
+
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  // Partial payload - only the fields this page owns. Fields left out
+  // (dsp/*) are untouched server-side.
+  const payload = {
+    server: {
+      host: document.getElementById('host').value,
+      port: parseInt(document.getElementById('port').value, 10)
+    },
+    logging: {
+      enabled: document.getElementById('logEnabled').checked,
+      udpHost: document.getElementById('logHost').value,
+      udpPort: parseInt(document.getElementById('logPort').value, 10)
+    }
+  };
+  const statusEl = document.getElementById('status');
+  try {
+    const res = await fetch('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
+    if (!res.ok) {
+      const err = await res.json();
+      statusEl.textContent = 'Error: ' + (err.error || res.status);
+      statusEl.className = 'error';
+      return;
+    }
+    statusEl.textContent = 'Saved.';
+    statusEl.className = 'ok';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.className = 'error';
+  }
+});
+
+load();
+</script>
+</body>
+</html>
+)HTMLPAGE";
+
+const char kDspSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DSP settings</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 1.5rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.1rem; }
+  label { display: block; margin-top: 0.75rem; font-weight: 600; }
+  input, select { width: 100%; padding: 0.4rem; margin-top: 0.25rem; box-sizing: border-box; }
+  #hint { font-size: 0.85rem; color: #555; margin-top: 0.5rem; }
+  button { margin-top: 1rem; padding: 0.5rem 1rem; }
+  #status.ok { color: green; }
+  #status.error { color: red; }
+</style>
+</head>
+<body>
+<h1>DSP flow</h1>
+<form id="form">
+  <label for="flow">Flow</label>
   <select id="flow">
     <option value="stereo">Stereo</option>
     <option value="biamp">Biamp</option>
@@ -61,22 +205,103 @@ const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <label for="gainTertiary">Tertiary gain (dB)</label>
   <input id="gainTertiary" type="number" step="any">
 
-  <h1>Remote logging</h1>
-  <label for="logEnabled"><input id="logEnabled" type="checkbox" style="width:auto; margin-right:0.4rem;">Send logs over UDP</label>
-
-  <label for="logHost">Target host</label>
-  <input id="logHost" type="text">
-
-  <label for="logPort">Target port</label>
-  <input id="logPort" type="number" min="1" max="65535">
-
   <button type="submit">Save</button>
   <p id="status"></p>
 </form>
 
-<div id="dacSection">
+<script>
+let state = null;
+
+const hints = {
+  stereo: "No filtering - pass-through stereo.",
+  biamp: "Primary = ch1 lowpass cutoff (Hz). Tertiary = ch2 highpass cutoff (Hz). Gains unused.",
+  bassBoost: "Primary = bass shelf frequency (Hz) and gain (dB). Tertiary unused.",
+  eqBassTreble: "Primary = bass shelf freq/gain (Hz/dB). Tertiary = treble shelf freq/gain (Hz/dB)."
+};
+
+function populateFlowFields(flowName) {
+  const params = (state.dsp.flows && state.dsp.flows[flowName]) || {};
+  document.getElementById('freqPrimary').value = params.freqPrimaryHz ?? 0;
+  document.getElementById('gainPrimary').value = params.gainPrimaryDb ?? 0;
+  document.getElementById('freqTertiary').value = params.freqTertiaryHz ?? 0;
+  document.getElementById('gainTertiary').value = params.gainTertiaryDb ?? 0;
+  document.getElementById('hint').textContent = hints[flowName] || '';
+}
+
+async function load() {
+  const res = await fetch('/api/settings');
+  state = await res.json();
+  document.getElementById('flow').value = state.dsp.activeFlow;
+  populateFlowFields(state.dsp.activeFlow);
+}
+
+document.getElementById('flow').addEventListener('change', (e) => {
+  populateFlowFields(e.target.value);
+});
+
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const flow = document.getElementById('flow').value;
+  // Partial payload - server/logging fields are untouched server-side.
+  const payload = {
+    dsp: {
+      activeFlow: flow,
+      flows: {
+        [flow]: {
+          freqPrimaryHz: parseFloat(document.getElementById('freqPrimary').value),
+          gainPrimaryDb: parseFloat(document.getElementById('gainPrimary').value),
+          freqTertiaryHz: parseFloat(document.getElementById('freqTertiary').value),
+          gainTertiaryDb: parseFloat(document.getElementById('gainTertiary').value)
+        }
+      }
+    }
+  };
+  const statusEl = document.getElementById('status');
+  try {
+    const res = await fetch('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
+    if (!res.ok) {
+      const err = await res.json();
+      statusEl.textContent = 'Error: ' + (err.error || res.status);
+      statusEl.className = 'error';
+      return;
+    }
+    state = await res.json();
+    statusEl.textContent = 'Saved.';
+    statusEl.className = 'ok';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.className = 'error';
+  }
+});
+
+load();
+</script>
+</body>
+</html>
+)HTMLPAGE";
+
+const char kDacSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DAC / EQ settings</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 1.5rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.1rem; }
+  label { display: block; margin-top: 0.75rem; font-weight: 600; }
+  input, select { width: 100%; padding: 0.4rem; margin-top: 0.25rem; box-sizing: border-box; }
+  button { margin-top: 1rem; padding: 0.5rem 1rem; }
+  #status.ok { color: green; }
+  #status.error { color: red; }
+  .eqBandRow { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.4rem; }
+  .eqBandRow span { width: 4.5rem; font-size: 0.85rem; }
+  .eqBandRow input { margin-top: 0; }
+</style>
+</head>
+<body>
 <h1>DAC (TAS5805M)</h1>
-<form id="dacForm">
+<p id="unavailable" style="display:none">DAC control isn't available on this device.</p>
+<form id="form">
   <label for="analogGain">Analog gain (0 = 0dB, 31 = -15.5dB)</label>
   <input id="analogGain" type="number" min="0" max="31" required>
 
@@ -142,112 +367,11 @@ const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <div id="eqBands"></div>
 
   <button type="submit">Save</button>
-  <p id="dacStatus"></p>
+  <p id="status"></p>
   <p id="faults"></p>
 </form>
-</div>
 
 <script>
-let state = null;
-
-const hints = {
-  stereo: "No filtering - pass-through stereo.",
-  biamp: "Primary = ch1 lowpass cutoff (Hz). Tertiary = ch2 highpass cutoff (Hz). Gains unused.",
-  bassBoost: "Primary = bass shelf frequency (Hz) and gain (dB). Tertiary unused.",
-  eqBassTreble: "Primary = bass shelf freq/gain (Hz/dB). Tertiary = treble shelf freq/gain (Hz/dB)."
-};
-
-function populateFlowFields(flowName) {
-  const params = (state.dsp.flows && state.dsp.flows[flowName]) || {};
-  document.getElementById('freqPrimary').value = params.freqPrimaryHz ?? 0;
-  document.getElementById('gainPrimary').value = params.gainPrimaryDb ?? 0;
-  document.getElementById('freqTertiary').value = params.freqTertiaryHz ?? 0;
-  document.getElementById('gainTertiary').value = params.gainTertiaryDb ?? 0;
-  document.getElementById('hint').textContent = hints[flowName] || '';
-}
-
-async function load() {
-  const res = await fetch('/api/settings');
-  state = await res.json();
-  document.getElementById('host').value = state.server.host;
-  document.getElementById('port').value = state.server.port;
-  document.getElementById('flow').value = state.dsp.activeFlow;
-  populateFlowFields(state.dsp.activeFlow);
-  document.getElementById('logEnabled').checked = state.logging.enabled;
-  document.getElementById('logHost').value = state.logging.udpHost;
-  document.getElementById('logPort').value = state.logging.udpPort;
-}
-
-document.getElementById('flow').addEventListener('change', (e) => {
-  populateFlowFields(e.target.value);
-});
-
-document.getElementById('detectBtn').addEventListener('click', async () => {
-  const statusEl = document.getElementById('detectStatus');
-  statusEl.textContent = 'Searching...';
-  statusEl.className = '';
-  try {
-    const res = await fetch('/api/discover');
-    if (!res.ok) {
-      const err = await res.json();
-      statusEl.textContent = 'Not found: ' + (err.error || res.status);
-      statusEl.className = 'error';
-      return;
-    }
-    const found = await res.json();
-    document.getElementById('host').value = found.host;
-    document.getElementById('port').value = found.port;
-    statusEl.textContent = `Found ${found.host}:${found.port}`;
-    statusEl.className = 'ok';
-  } catch (err) {
-    statusEl.textContent = 'Error: ' + err.message;
-    statusEl.className = 'error';
-  }
-});
-
-document.getElementById('form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const flow = document.getElementById('flow').value;
-  const payload = {
-    server: {
-      host: document.getElementById('host').value,
-      port: parseInt(document.getElementById('port').value, 10)
-    },
-    dsp: {
-      activeFlow: flow,
-      flows: {
-        [flow]: {
-          freqPrimaryHz: parseFloat(document.getElementById('freqPrimary').value),
-          gainPrimaryDb: parseFloat(document.getElementById('gainPrimary').value),
-          freqTertiaryHz: parseFloat(document.getElementById('freqTertiary').value),
-          gainTertiaryDb: parseFloat(document.getElementById('gainTertiary').value)
-        }
-      }
-    },
-    logging: {
-      enabled: document.getElementById('logEnabled').checked,
-      udpHost: document.getElementById('logHost').value,
-      udpPort: parseInt(document.getElementById('logPort').value, 10)
-    }
-  };
-  const statusEl = document.getElementById('status');
-  try {
-    const res = await fetch('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
-    if (!res.ok) {
-      const err = await res.json();
-      statusEl.textContent = 'Error: ' + (err.error || res.status);
-      statusEl.className = 'error';
-      return;
-    }
-    state = await res.json();
-    statusEl.textContent = 'Saved.';
-    statusEl.className = 'ok';
-  } catch (err) {
-    statusEl.textContent = 'Error: ' + err.message;
-    statusEl.className = 'error';
-  }
-});
-
 const eqProfiles = [
   ['flat', 'Flat'],
   ['lf60', '60Hz LF'], ['lf70', '70Hz LF'], ['lf80', '80Hz LF'],
@@ -294,11 +418,12 @@ async function loadFaults() {
   }
 }
 
-async function loadDac() {
+async function load() {
   try {
     const res = await fetch('/api/dac/settings');
     if (!res.ok) {
-      document.getElementById('dacSection').style.display = 'none';
+      document.getElementById('form').style.display = 'none';
+      document.getElementById('unavailable').style.display = '';
       return;
     }
     const dac = (await res.json()).dac;
@@ -320,11 +445,12 @@ async function loadDac() {
     loadFaults();
     setInterval(loadFaults, 5000);
   } catch (err) {
-    document.getElementById('dacSection').style.display = 'none';
+    document.getElementById('form').style.display = 'none';
+    document.getElementById('unavailable').style.display = '';
   }
 }
 
-document.getElementById('dacForm').addEventListener('submit', async (e) => {
+document.getElementById('form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const payload = {
     dac: {
@@ -347,7 +473,7 @@ document.getElementById('dacForm').addEventListener('submit', async (e) => {
       }
     }
   };
-  const statusEl = document.getElementById('dacStatus');
+  const statusEl = document.getElementById('status');
   try {
     const res = await fetch('/api/dac/settings', { method: 'POST', body: JSON.stringify(payload) });
     if (!res.ok) {
@@ -365,7 +491,6 @@ document.getElementById('dacForm').addEventListener('submit', async (e) => {
 });
 
 load();
-loadDac();
 </script>
 </body>
 </html>
