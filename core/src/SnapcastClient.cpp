@@ -2,6 +2,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <optional>
 #include <thread>
 
@@ -40,7 +41,9 @@ std::optional<bell::audio::SampleRate> toSampleRate(uint32_t hz) {
 }  // namespace
 
 SnapcastClient::SnapcastClient(Config config)
-    : bell::Task("snapcast_client", 32768, /*espPriority=*/4,
+    // Sized against a measured high-water mark (~12KB) plus margin, not a
+    // round-number guess - see main.cpp's periodic stack headroom log.
+    : bell::Task("snapcast_client", 24576, /*espPriority=*/4,
                 bell::TaskCore::CoreAny, /*espStackOnPsram=*/false),
       config_(std::move(config)) {
   startTask();
@@ -242,6 +245,7 @@ bool SnapcastClient::handleCodecHeader(const std::byte* payload, size_t len) {
     // this wastes ~15KB of the tmpBuffer that's never touched.
     bell::audio::OpusConfig opusConfig;
     opusConfig.bufferSize = 4096;
+    std::lock_guard<std::mutex> lock(opusMutex_);
     auto setupRes = opusCodec_.setupDecode(pcmFormat_, opusConfig);
     if (!setupRes) {
       BELL_LOG(error, LOG_TAG, "opus setupDecode failed: {}",
@@ -256,7 +260,7 @@ bool SnapcastClient::handleCodecHeader(const std::byte* payload, size_t len) {
 
   receivedCodecHeader_ = true;
   if (onCodecReady) {
-    onCodecReady(pcmFormat_);
+    onCodecReady(activeCodec_, pcmFormat_);
   }
   return true;
 }
@@ -270,24 +274,25 @@ void SnapcastClient::handleWireChunk(const std::byte* payload, size_t len) {
     return;
   }
 
-  if (activeCodec_ == Codec::Pcm) {
-    if (onPcmChunk) {
-      onPcmChunk(chunk->payload.data(), chunk->payload.size(),
+  if (onAudioChunk) {
+    onAudioChunk(activeCodec_, chunk->payload.data(), chunk->payload.size(),
                 chunk->timestamp.toMicros());
-    }
-    return;
   }
+}
 
-  auto decoded = opusCodec_.decode(
-      tcb::span<const std::byte>(chunk->payload.data(), chunk->payload.size()));
+bell::Result<size_t> SnapcastClient::decodeOpus(
+    tcb::span<const std::byte> encoded, std::byte* out, size_t outCapacity) {
+  std::lock_guard<std::mutex> lock(opusMutex_);
+  auto decoded = opusCodec_.decode(encoded);
   if (!decoded) {
-    BELL_LOG(warn, LOG_TAG, "opus decode failed: {}", decoded.error());
-    return;
+    return nonstd::make_unexpected(decoded.error());
   }
-  if (onPcmChunk) {
-    onPcmChunk(decoded->pcm.data(), decoded->pcm.size(),
-              chunk->timestamp.toMicros());
+  if (decoded->pcm.size() > outCapacity) {
+    return nonstd::make_unexpected(
+        bell::audio::make_error_code(bell::audio::Errc::InvalidFormat));
   }
+  std::memcpy(out, decoded->pcm.data(), decoded->pcm.size());
+  return decoded->pcm.size();
 }
 
 void SnapcastClient::handleServerSettings(const std::byte* payload,
