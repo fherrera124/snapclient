@@ -23,6 +23,12 @@ class ControlSettings {
   uint16_t serverPort() const;
   void setServerPort(uint16_t port);
 
+  // Sent as the Snapcast HELLO handshake's hostname field, so this device
+  // shows up under its own name in the server's client list instead of a
+  // generic default.
+  std::string hostname() const;
+  void setHostname(const std::string& hostname);
+
   DspFlow activeFlow() const;
   void setActiveFlow(DspFlow flow);
 
@@ -47,6 +53,7 @@ class ControlSettings {
 
   std::string serverHost_;
   uint16_t serverPort_ = 1704;
+  std::string hostname_;
   DspFlow activeFlow_ = DspFlow::Stereo;
   std::array<DspFilterParams, 4> flowParams_{};
   bool udpLogEnabled_ = false;

@@ -26,6 +26,7 @@ std::optional<DspFlow> flowFromName(const std::string& name) {
 
 const char* kServerHostKey = "server.host";
 const char* kServerPortKey = "server.port";
+const char* kHostnameKey = "device.hostname";
 const char* kActiveFlowKey = "dsp.activeFlow";
 const char* kUdpLogEnabledKey = "logging.enabled";
 const char* kUdpLogHostKey = "logging.udpHost";
@@ -46,6 +47,9 @@ void ControlSettings::load() {
   }
   if (auto v = store_.getInt(kServerPortKey)) {
     serverPort_ = static_cast<uint16_t>(*v);
+  }
+  if (auto v = store_.getString(kHostnameKey)) {
+    hostname_ = *v;
   }
   if (auto v = store_.getString(kActiveFlowKey)) {
     if (auto flow = flowFromName(*v)) {
@@ -100,6 +104,17 @@ void ControlSettings::setServerPort(uint16_t port) {
   std::scoped_lock lock(mutex_);
   serverPort_ = port;
   store_.setInt(kServerPortKey, port);
+}
+
+std::string ControlSettings::hostname() const {
+  std::scoped_lock lock(mutex_);
+  return hostname_;
+}
+
+void ControlSettings::setHostname(const std::string& hostname) {
+  std::scoped_lock lock(mutex_);
+  hostname_ = hostname;
+  store_.setString(kHostnameKey, hostname);
 }
 
 DspFlow ControlSettings::activeFlow() const {
@@ -171,6 +186,7 @@ std::string ControlSettings::toJson() const {
   tao::json::value obj;
   obj["server"]["host"] = serverHost_;
   obj["server"]["port"] = serverPort_;
+  obj["device"]["hostname"] = hostname_;
   obj["dsp"]["activeFlow"] = flowName(activeFlow_);
   obj["dsp"]["flows"] = flows;
 
@@ -194,6 +210,7 @@ bool ControlSettings::applyJson(const std::string& json) {
 
   std::optional<std::string> newHost;
   std::optional<uint16_t> newPort;
+  std::optional<std::string> newHostname;
   std::optional<DspFlow> newActiveFlow;
   std::array<std::optional<DspFilterParams>, 4> newFlowParams;
   std::optional<bool> newUdpLogEnabled;
@@ -210,6 +227,14 @@ bool ControlSettings::applyJson(const std::string& json) {
       }
       if (const auto* port = server->find("port")) {
         newPort = static_cast<uint16_t>(port->as<uint32_t>());
+      }
+    }
+    if (const auto* device = obj.find("device")) {
+      if (!device->is_object()) {
+        return false;
+      }
+      if (const auto* hostname = device->find("hostname")) {
+        newHostname = hostname->as<std::string>();
       }
     }
     if (const auto* dsp = obj.find("dsp")) {
@@ -281,6 +306,9 @@ bool ControlSettings::applyJson(const std::string& json) {
   }
   if (newPort) {
     setServerPort(*newPort);
+  }
+  if (newHostname) {
+    setHostname(*newHostname);
   }
   if (newActiveFlow) {
     setActiveFlow(*newActiveFlow);

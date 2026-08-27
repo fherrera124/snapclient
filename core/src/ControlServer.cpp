@@ -8,6 +8,7 @@
 #include <string>
 #include <unordered_map>
 
+#include <bell/Logger.h>
 #include <bell/http/Reader.h>
 #include <bell/http/Writer.h>
 #include <tao/json.hpp>
@@ -15,7 +16,15 @@
 #include "snapclient/SettingsUiHtml.h"
 #include "snapclient/SnapcastDiscovery.h"
 
+#ifdef ESP_PLATFORM
+#include <esp_system.h>
+#endif
+
 namespace snapclient {
+
+namespace {
+const char* kLogTag = "ControlServer";
+}  // namespace
 
 ControlServer::ControlServer(ControlSettings& settings)
     : settings_(settings) {
@@ -97,6 +106,23 @@ void ControlServer::registerRoutes() {
         (void)response->writeResponseWithBody(
             200, {{"Content-Type", "application/json"}},
             tao::json::to_string(obj));
+      });
+
+  httpServer_.registerPost(
+      "/api/restart",
+      [](const std::unique_ptr<bell::http::Reader>& /*request*/,
+        const std::unique_ptr<bell::http::Writer>& response,
+        const std::unordered_map<std::string, std::string>& /*params*/) {
+#ifdef ESP_PLATFORM
+        (void)response->writeResponseWithBody(
+            200, {{"Content-Type", "application/json"}}, R"({"ok":true})");
+        esp_restart();
+#else
+        BELL_LOG(warn, kLogTag, "restart requested, unsupported on this target");
+        (void)response->writeResponseWithBody(
+            501, {{"Content-Type", "application/json"}},
+            R"({"error":"restart not supported on this target"})");
+#endif
       });
 
   httpServer_.registerPost(

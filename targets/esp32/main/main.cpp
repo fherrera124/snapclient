@@ -162,6 +162,9 @@ class SnapclientTask : public bell::Task {
       config.host = CONFIG_SNAPCLIENT_SERVER_HOST;
       config.port = CONFIG_SNAPCLIENT_SERVER_PORT;
     }
+    if (!settings.hostname().empty()) {
+      config.clientName = settings.hostname();
+    }
     if (!wifiConnected) {
       BELL_LOG(info, kLogTag, "waiting for WiFi before connecting to {}:{}",
                config.host, config.port);

@@ -62,6 +62,8 @@ const char kNavShellHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   nav a { padding: 0.75rem 1rem; text-decoration: none; color: #333; }
   nav a.active { border-bottom: 2px solid #333; font-weight: 600; }
   #content { flex: 1; border: none; width: 100%; }
+  #restartBtn { margin: 0.5rem 1rem; padding: 0.4rem 0.9rem; border: none; border-radius: 4px; background: #dc3545; color: white; cursor: pointer; }
+  #restartBtn:hover { background: #c82333; }
 </style>
 </head>
 <body>
@@ -70,6 +72,7 @@ const char kNavShellHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <a href="#" class="navLink active" data-page="general-settings.html">General</a>
   <a href="#" class="navLink" data-page="dsp-settings.html">DSP</a>
   <a href="#" class="navLink" id="dacTab" data-page="dac-settings.html" style="display:none">DAC / EQ</a>
+  <button id="restartBtn" style="margin-left:auto">Restart</button>
 </nav>
 <iframe id="content" src="general-settings.html"></iframe>
 <script>
@@ -88,6 +91,14 @@ fetch('/api/dac/settings').then((res) => {
   if (res.ok) {
     document.getElementById('dacTab').style.display = '';
   }
+});
+
+document.getElementById('restartBtn').addEventListener('click', () => {
+  if (!confirm('Restart the device now?')) {
+    return;
+  }
+  // The device reboots before this can resolve either way.
+  fetch('/api/restart', { method: 'POST' }).catch(() => {});
 });
 </script>
 </body>
@@ -108,8 +119,12 @@ const char kGeneralSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Snapcast server</h1>
+<h1>Device</h1>
 <form id="form">
+  <label for="hostname">Hostname</label>
+  <input id="hostname" type="text" placeholder="snapclient-cpp">
+
+  <h1>Snapcast server</h1>
   <label for="host">Server host</label>
   <div class="hostRow">
     <input id="host" type="text" required>
@@ -137,6 +152,7 @@ const char kGeneralSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 async function load() {
   const res = await fetch('/api/settings');
   const state = await res.json();
+  document.getElementById('hostname').value = state.device.hostname;
   document.getElementById('host').value = state.server.host;
   document.getElementById('port').value = state.server.port;
   document.getElementById('logEnabled').checked = state.logging.enabled;
@@ -172,6 +188,9 @@ document.getElementById('form').addEventListener('submit', async (e) => {
   // Partial payload - only the fields this page owns. Fields left out
   // (dsp/*) are untouched server-side.
   const payload = {
+    device: {
+      hostname: document.getElementById('hostname').value
+    },
     server: {
       host: document.getElementById('host').value,
       port: parseInt(document.getElementById('port').value, 10)
