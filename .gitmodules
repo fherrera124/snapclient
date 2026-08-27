@@ -2,7 +2,7 @@
 	path = components/esp-dsp
 	url = https://github.com/espressif/esp-dsp
 [submodule "components/flac/flac"]
-	path = components/flac/flac
+	path = reference/flac/flac
 	url = https://github.com/xiph/flac.git
 [submodule "external/bell"]
 	path = external/bell
