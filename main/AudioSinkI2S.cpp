@@ -12,6 +12,8 @@ namespace {
 constexpr uint32_t kPrimeSilenceMs = 100;
 constexpr size_t kBytesPerFrame = 2 /*channels*/ * sizeof(int16_t);
 constexpr size_t kSilenceChunkFrames = 256;
+constexpr size_t kDmaDescNum = 4;
+constexpr size_t kDmaFrameNum = 1023;
 }  // namespace
 
 AudioSinkI2S::AudioSinkI2S(Config config) : config_(config) {
@@ -55,8 +57,8 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
   // (~43ms) - i2s_channel_write() blocks until the DMA queue has room, and
   // 2 descriptors left too little slack to absorb scheduling jitter
   // (measured write() spikes up to ~52ms against a 20ms/chunk budget).
-  chanConfig.dma_desc_num = 4;
-  chanConfig.dma_frame_num = 1023;
+  chanConfig.dma_desc_num = kDmaDescNum;
+  chanConfig.dma_frame_num = kDmaFrameNum;
   chanConfig.auto_clear = true;
   esp_err_t err = i2s_new_channel(&chanConfig, &txChan_, nullptr);
   if (err != ESP_OK) {
@@ -101,6 +103,18 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
   currentSampleRate_ = sampleRate;
   primeSilence();
   setMuted(false);
+}
+
+uint32_t AudioSinkI2S::outputBufferUs() const {
+  // Audio handed to i2s_channel_write() sits in this many frames of DMA
+  // ring before actually reaching the DAC - SyncEngine's played-frame
+  // count needs this added on top of the server-configured DAC latency,
+  // or it targets a point in time earlier than what's really playing.
+  if (currentSampleRate_ == 0) {
+    return 0;
+  }
+  return static_cast<uint32_t>(uint64_t{kDmaDescNum} * kDmaFrameNum *
+                               1000000 / currentSampleRate_);
 }
 
 void AudioSinkI2S::primeSilence() {

@@ -38,6 +38,11 @@ class AudioSinkI2S {
 
   void write(const std::byte* pcm, size_t len);
 
+  // Time currently sitting in the DMA ring between write() and the DAC
+  // actually playing it, at the last-configured sample rate. 0 before the
+  // first configure() call.
+  uint32_t outputBufferUs() const;
+
   // No-op if Config::mutePin is GPIO_NUM_NC.
   void setMuted(bool muted);
 

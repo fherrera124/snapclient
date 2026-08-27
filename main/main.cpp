@@ -94,6 +94,7 @@ class SnapclientTask : public bell::Task {
     snapclient::DspProcessor dsp;
     bell::audio::SampleRate sampleRate = bell::audio::SampleRate::SR_44100HZ;
     int32_t bufferMs = 0;
+    int32_t serverLatencyMs = 0;
 
     snapclient::NvsSettingsStore settingsStore;
     snapclient::ControlSettings settings(settingsStore);
@@ -192,7 +193,11 @@ class SnapclientTask : public bell::Task {
 
     client.onServerSettings = [&](const snapclient::ServerSettings& s) {
       bufferMs = s.bufferMs;
-      sync.onSettingsChanged(bufferMs, 0, static_cast<uint32_t>(sampleRate));
+      serverLatencyMs = s.latencyMs;
+      const int32_t dacLatencyMs =
+          serverLatencyMs + static_cast<int32_t>(i2sSink.outputBufferUs() / 1000);
+      sync.onSettingsChanged(bufferMs, dacLatencyMs,
+                             static_cast<uint32_t>(sampleRate));
       dsp.setVolume(static_cast<float>(s.volume) / 100.0f);
       i2sSink.setMuted(s.muted);
       BELL_LOG(info, kLogTag,
@@ -202,8 +207,14 @@ class SnapclientTask : public bell::Task {
 
     client.onCodecReady = [&](const bell::audio::Format& fmt) {
       sampleRate = fmt.getSampleRate();
-      sync.onSettingsChanged(bufferMs, 0, fmt.getSampleRateValue());
+      // Sink must be reconfigured first - outputBufferUs() below reports
+      // the ring depth at whatever sample rate the sink was last
+      // configured for.
       i2sSink.configure(fmt.getSampleRateValue());
+      const int32_t dacLatencyMs =
+          serverLatencyMs + static_cast<int32_t>(i2sSink.outputBufferUs() / 1000);
+      sync.onSettingsChanged(bufferMs, dacLatencyMs,
+                             fmt.getSampleRateValue());
       BELL_LOG(info, kLogTag, "codec ready: {} Hz, {} ch",
                fmt.getSampleRateValue(), fmt.getNumChannels());
     };
