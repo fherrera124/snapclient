@@ -6,8 +6,8 @@ idf_component_register(
     SRCS ${SOURCES}
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_driver_gpio esp_driver_i2s esp_driver_uart
-                  esp_driver_usb_serial_jtag esp_event esp_netif esp_wifi
-                  nvs_flash
+                  esp_driver_usb_serial_jtag esp_event esp_netif esp_pm
+                  esp_wifi nvs_flash
 )
 
 # taojson's operator"" _foo() syntax (space before the suffix) is

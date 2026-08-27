@@ -448,12 +448,14 @@ extern "C" void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
 
-  // DFS + light sleep: idle most of the runtime between chunks, so let
-  // the clock drop instead of sitting at max always.
+  // DFS only, not light sleep: CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP puts
+  // WiFi/lwIP's own buffers in PSRAM, and light sleep's PSRAM bus
+  // quiescing around each sleep/wake cycle isn't safe to combine with
+  // that on this board.
   esp_pm_config_t pmConfig = {
       .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
       .min_freq_mhz = 40,
-      .light_sleep_enable = true,
+      .light_sleep_enable = false,
   };
   if (esp_err_t pmErr = esp_pm_configure(&pmConfig); pmErr != ESP_OK) {
     ESP_LOGW(TAG, "esp_pm_configure failed: %d", pmErr);
