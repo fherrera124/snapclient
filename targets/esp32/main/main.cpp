@@ -13,6 +13,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -154,6 +155,20 @@ class SnapclientTask : public bell::Task {
     size_t chunksDropped = 0;
     size_t corrections = 0;
 
+    // Pins the clock to max frequency only while frames are actually going
+    // to the DAC (see the queueDepth==0 and Play branches below) - idle
+    // between chunks lets esp_pm_configure's DFS drop it the rest of the
+    // time. A null handle (creation failed, e.g. PM disabled in this
+    // build) just means acquire/release below are skipped.
+    esp_pm_lock_handle_t pmLock = nullptr;
+    if (esp_err_t pmErr = esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0,
+                                             "snapclient_playback", &pmLock);
+        pmErr != ESP_OK) {
+      BELL_LOG(warn, kLogTag, "esp_pm_lock_create failed: {}", pmErr);
+      pmLock = nullptr;
+    }
+    bool playbackActive = false;
+
     snapclient::SnapcastClient::Config config;
     if (!settings.serverHost().empty()) {
       config.host = settings.serverHost();
@@ -258,6 +273,10 @@ class SnapclientTask : public bell::Task {
       }
 
       if (queueDepth == 0) {
+        if (pmLock != nullptr && playbackActive) {
+          esp_pm_lock_release(pmLock);
+          playbackActive = false;
+        }
         // At CONFIG_FREERTOS_HZ=100 (10ms/tick), anything under 10ms
         // rounds down to 0 ticks - vTaskDelay(0) doesn't actually block,
         // just yields once, which isn't enough to let CPU1's idle task
@@ -298,6 +317,11 @@ class SnapclientTask : public bell::Task {
         }
         if (result.decision == snapclient::PlayDecision::Play) {
           chunksPlayed++;
+
+          if (pmLock != nullptr && !playbackActive) {
+            esp_pm_lock_acquire(pmLock);
+            playbackActive = true;
+          }
 
           const auto* writeStart =
               reinterpret_cast<const std::byte*>(scratch.data());
@@ -413,6 +437,20 @@ extern "C" void app_main(void) {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+
+  // Idle most of the time between chunks - let the clock drop then instead
+  // of pinning it at max always. SnapclientTask holds a pm lock back up to
+  // max frequency only while frames are actually going to the DAC. Fails
+  // with ESP_ERR_NOT_SUPPORTED if CONFIG_PM_ENABLE ends up off in this
+  // build, which is fine to just log and continue without.
+  esp_pm_config_t pmConfig = {
+      .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+      .min_freq_mhz = 40,
+      .light_sleep_enable = true,
+  };
+  if (esp_err_t pmErr = esp_pm_configure(&pmConfig); pmErr != ESP_OK) {
+    ESP_LOGW(TAG, "esp_pm_configure failed: %d", pmErr);
+  }
 
   wifiStationInit();
 
