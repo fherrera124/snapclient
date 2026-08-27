@@ -6,11 +6,13 @@
 
 namespace snapclient {
 
-// Fixed-capacity pool of equally-sized PCM buffers, allocated once at
+// Fixed-capacity pool of equally-sized byte buffers, allocated once at
 // construction. Exists to eliminate the per-chunk malloc/free churn that
 // fragments the heap under sustained streaming - callers get a slot back
 // as an RAII handle (PooledBuffer); returning it to the pool happens
 // automatically when the handle is destroyed or overwritten by a move.
+// Slot contents are whatever the caller stores - encoded audio payloads,
+// decoded PCM, or anything else of a known max size.
 class PcmChunkPool {
  public:
   class PooledBuffer {

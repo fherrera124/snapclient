@@ -1,4 +1,5 @@
 #include <bell/Logger.h>
+#include <bell/utils/Semaphore.h>
 #include <bell/utils/Task.h>
 
 #include <algorithm>
@@ -10,11 +11,12 @@
 #include <thread>
 #include <vector>
 
+#include <tcb/span.hpp>
+
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
-#include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -40,28 +42,58 @@ const char* TAG = "snapclient";
 
 std::atomic<bool> wifiConnected{false};
 
-// Pre-allocated once at startup instead of per-chunk, to avoid heap
-// fragmentation under sustained ~50 allocs/frees per second.
-//
-// PcmChunkPool prefers IRAM (a pool separate from the DRAM heap
-// Opus/DSP/WiFi/HTTP draw from) but falls back to DRAM when IRAM has no
-// room - sized against whichever of those two is tighter on a given
-// chip, since oversizing it starves those other allocations.
-#if CONFIG_IDF_TARGET_ESP32
-// Original ESP32, no PSRAM: ~320KB total SRAM has to cover WiFi, Opus,
-// DSP and HTTP too - 4 slots (~16KB, ~80ms) instead of the PSRAM
-// board's 15.
-constexpr size_t kPcmPoolSlotCount = 4;
-constexpr size_t kPcmPoolSlotBytes = 4096;
-#else
-constexpr size_t kPcmPoolSlotCount = 15;  // ~61KB, ~300ms
-constexpr size_t kPcmPoolSlotBytes = 4096;
-#endif
-
 // Snapcast's Opus stream here always encodes 20ms frames at 48kHz -
 // 960 samples per channel. Used to size the silence placeholder written
-// in place of a chunk the pool couldn't hold.
+// in place of a chunk the pool couldn't hold, decodeOpus()'s output
+// buffer, and the Pcm-codec pool slot size below (raw PCM has no
+// compression to exploit, so a slot for it must fit a whole chunk).
 constexpr size_t kFramesPerChunk = 960;
+constexpr size_t kBytesPerFrame = 2 * sizeof(int16_t);  // stereo S16
+constexpr size_t kPcmChunkBytes = kFramesPerChunk * kBytesPerFrame;
+
+// Pre-allocated instead of per-chunk, to avoid heap fragmentation under
+// sustained ~50 allocs/frees per second. PcmChunkPool prefers IRAM (a
+// pool separate from the DRAM heap Opus/DSP/WiFi/HTTP draw from) but
+// falls back to DRAM when IRAM has no room.
+//
+// Slots hold chunks as *received*, not decoded. For Opus, that means a
+// raw encoded packet - capped at 1275 bytes by RFC 6716 for a 20ms frame
+// regardless of bitrate, far smaller than the ~3.8KB its decoded PCM
+// takes up - decodeOpus() only runs right before playback (see the
+// consumer loop below), so the bulk of however many chunks the server's
+// bufferMs asks for sits compactly encoded. Pcm has no such compression
+// to exploit, so its slot must fit a whole raw chunk (kPcmChunkBytes) -
+// sized separately below, and the pool is reconstructed for whichever
+// codec is actually negotiated (see ensurePoolForCodec in runTask()),
+// since committing to one slot size at compile time would either waste
+// most of Opus's real buffering headroom or make Pcm permanently fall
+// back to the pool-exhausted silence path.
+constexpr size_t kOpusPoolSlotBytes = 1400;  // RFC 6716 max (1275) + margin
+#if CONFIG_IDF_TARGET_ESP32
+// Original ESP32, no PSRAM: ~320KB total SRAM has to cover WiFi, Opus,
+// DSP and HTTP too - watch freeHeap at startup if raising this further,
+// Opus decoder setup can fail under memory pressure on this board.
+constexpr size_t kOpusPoolSlotCount = 32;  // ~44KB, ~640ms
+// Same ~42KB this pool always held for Pcm, before tonight's Opus-only
+// slot shrink - Pcm was never affected by that, so it keeps its
+// original capacity rather than gaining or losing anything.
+constexpr size_t kPcmPoolSlotCount = 11;  // ~220ms
+#else
+// Same ~44KB/~640ms Opus budget as the ESP32 branch above, scaled up -
+// not independently tuned against this (PSRAM) board's real headroom.
+constexpr size_t kOpusPoolSlotCount = 44;  // ~880ms
+constexpr size_t kPcmPoolSlotCount = 15;  // ~300ms
+#endif
+
+// Bounds the network-to-playback queue independently of the pool sizes -
+// those are sized against the memory-tight pool of real payload buffers,
+// but a queued item without one still carries useful timing (it falls
+// back to the pool-exhausted silence path in onAudioChunk below), so
+// starving the queue itself to match the pool's memory budget only turns
+// bursts into unaccounted drops instead of accounted silence. Set above
+// what the Opus pool (kOpusPoolSlotCount, the common case) can back with
+// real data, not tied to any one server-configured bufferMs.
+constexpr size_t kQueueCapacity = 40;
 
 int64_t nowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -71,7 +103,10 @@ int64_t nowUs() {
 
 struct QueuedChunk {
   int64_t serverTimeUs;
-  snapclient::PcmChunkPool::PooledBuffer pcm;
+  snapclient::Codec codec = snapclient::Codec::None;
+  // Encoded (Opus) or raw (Pcm codec) payload, exactly as received -
+  // decodeOpus() runs later, in the consumer loop, not here.
+  snapclient::PcmChunkPool::PooledBuffer payload;
 };
 
 }  // namespace
@@ -87,8 +122,10 @@ class SnapclientTask : public bell::Task {
   // this task's idle-poll loop starves CPU1's idle task of runtime, and
   // FreeRTOS's task watchdog only expects idle to be starved briefly, not
   // continuously.
+  // Sized against a measured high-water mark (~5.5KB) plus margin, not a
+  // round-number guess - see the periodic stack headroom log below.
   SnapclientTask()
-      : bell::Task("snapclient", 32 * 1024, 5, bell::TaskCore::Core1,
+      : bell::Task("snapclient", 16 * 1024, 5, bell::TaskCore::Core1,
                    /*espStackOnPsram=*/false) {
     startTask();
   }
@@ -101,6 +138,13 @@ class SnapclientTask : public bell::Task {
     bell::audio::SampleRate sampleRate = bell::audio::SampleRate::SR_44100HZ;
     int32_t bufferMs = 0;
     int32_t serverLatencyMs = 0;
+    // Tracks what SyncEngine was last told, so a ServerSettings message
+    // that only changed volume/mute (bundled together in the same message
+    // by the protocol) doesn't also force a resync - sync.onSettingsChanged
+    // drops playing_ back to the initial-sync state, which costs several
+    // seconds to recover from and has nothing to do with volume.
+    int32_t lastSyncBufferMs = 0;
+    int64_t lastServerSettingsLogUs = 0;
 
     snapclient::NvsSettingsStore settingsStore;
     snapclient::ControlSettings settings(settingsStore);
@@ -155,25 +199,45 @@ class SnapclientTask : public bell::Task {
         static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MUTE_GPIO);
     snapclient::AudioSinkI2S i2sSink(sinkConfig);
 
-    snapclient::PcmChunkPool pcmPool(kPcmPoolSlotCount, kPcmPoolSlotBytes);
+    // Reconstructed by ensurePoolForCodec() below for whichever codec is
+    // actually negotiated - null only before the first one ever is.
+    std::unique_ptr<snapclient::PcmChunkPool> pcmPool;
+    snapclient::Codec pcmPoolCodec = snapclient::Codec::None;
+    auto ensurePoolForCodec = [&](snapclient::Codec codec) {
+      if (codec == pcmPoolCodec) {
+        return;
+      }
+      pcmPoolCodec = codec;
+      // release(), not reset(): a PooledBuffer the consumer thread
+      // already checked out from the old pool before this runs (not
+      // ruled out - this fires on the network thread, independently of
+      // the consumer's own loop timing) still needs its original pool
+      // object to exist when it releases back. Actual codec transitions
+      // are rare - a reconnect with the same codec never reaches here,
+      // since pcmPoolCodec already matches - so deliberately leaking one
+      // pool's worth of storage on the rare transition that does happen
+      // beats synchronizing a safe hand-off between threads for
+      // something that may never occur in a stable deployment.
+      (void)pcmPool.release();
+      if (codec == snapclient::Codec::Pcm) {
+        pcmPool = std::make_unique<snapclient::PcmChunkPool>(kPcmPoolSlotCount,
+                                                             kPcmChunkBytes);
+      } else {
+        pcmPool = std::make_unique<snapclient::PcmChunkPool>(
+            kOpusPoolSlotCount, kOpusPoolSlotBytes);
+      }
+    };
+    ensurePoolForCodec(snapclient::Codec::Opus);
     std::mutex queueMutex;
     std::deque<QueuedChunk> queue;
+    // Lets the empty-queue wait below react as soon as onAudioChunk pushes
+    // something, instead of polling on a fixed interval.
+    bell::Semaphore chunkAvailable;
 
     size_t chunksPlayed = 0;
     size_t chunksDropped = 0;
     size_t corrections = 0;
-
-    // Held only while frames are going to the DAC, so DFS can drop the
-    // clock the rest of the time. Null handle (e.g. PM disabled) just
-    // makes acquire/release below no-ops.
-    esp_pm_lock_handle_t pmLock = nullptr;
-    if (esp_err_t pmErr = esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0,
-                                             "snapclient_playback", &pmLock);
-        pmErr != ESP_OK) {
-      BELL_LOG(warn, kLogTag, "esp_pm_lock_create failed: {}", pmErr);
-      pmLock = nullptr;
-    }
-    bool playbackActive = false;
+    size_t silencePlayed = 0;
 
     snapclient::SnapcastClient::Config config;
     if (!settings.serverHost().empty()) {
@@ -200,27 +264,38 @@ class SnapclientTask : public bell::Task {
     client.onServerSettings = [&](const snapclient::ServerSettings& s) {
       bufferMs = s.bufferMs;
       serverLatencyMs = s.latencyMs;
-      const int32_t dacLatencyMs =
-          serverLatencyMs + static_cast<int32_t>(i2sSink.outputBufferUs() / 1000);
-      sync.onSettingsChanged(bufferMs, dacLatencyMs,
-                             static_cast<uint32_t>(sampleRate));
+      if (bufferMs != lastSyncBufferMs) {
+        lastSyncBufferMs = bufferMs;
+        sync.onSettingsChanged(bufferMs, static_cast<uint32_t>(sampleRate));
+      }
       dsp.setVolume(static_cast<float>(s.volume) / 100.0f);
       i2sSink.setMuted(s.muted);
-      BELL_LOG(info, kLogTag,
-               "server settings: bufferMs={} volume={} muted={}", s.bufferMs,
-               s.volume, s.muted);
+
+      // A UI volume slider sends one of these per tick while dragging -
+      // same UART-stall reasoning as the drop log above for throttling it.
+      const int64_t settingsLogNow = nowUs();
+      if (settingsLogNow - lastServerSettingsLogUs >= 1000000) {
+        lastServerSettingsLogUs = settingsLogNow;
+        BELL_LOG(info, kLogTag,
+                 "server settings: bufferMs={} volume={} muted={}",
+                 s.bufferMs, s.volume, s.muted);
+      }
     };
 
-    client.onCodecReady = [&](const bell::audio::Format& fmt) {
+    client.onCodecReady = [&](snapclient::Codec codec,
+                              const bell::audio::Format& fmt) {
       sampleRate = fmt.getSampleRate();
-      // Sink must be reconfigured first - outputBufferUs() below reports
-      // the ring depth at whatever sample rate the sink was last
-      // configured for.
       i2sSink.configure(fmt.getSampleRateValue());
-      const int32_t dacLatencyMs =
-          serverLatencyMs + static_cast<int32_t>(i2sSink.outputBufferUs() / 1000);
-      sync.onSettingsChanged(bufferMs, dacLatencyMs,
-                             fmt.getSampleRateValue());
+      lastSyncBufferMs = bufferMs;
+      sync.onSettingsChanged(bufferMs, fmt.getSampleRateValue());
+      {
+        // Queued chunks predate this codec header and would otherwise
+        // decode against the *new* decoder instance setupDecode() just
+        // recreated in SnapcastClient.
+        std::lock_guard<std::mutex> lock(queueMutex);
+        queue.clear();
+      }
+      ensurePoolForCodec(codec);
       BELL_LOG(info, kLogTag, "codec ready: {} Hz, {} ch",
                fmt.getSampleRateValue(), fmt.getNumChannels());
     };
@@ -229,50 +304,57 @@ class SnapclientTask : public bell::Task {
                               int64_t t) {
       sync.insertLatencySample(offsetUs, maxErrorUs, t);
       if (sync.latencyReady()) {
+        // A shorter interval keeps TimeFilter's offset fresher, but adds
+        // network-thread load that can nudge queue depth past what the
+        // pool backs with real encoded buffers - 1s keeps that load low.
         client.setPingIntervalUs(1000000);
       }
     };
 
     int64_t lastDropLogUs = 0;
     size_t queueFullDrops = 0;
-    size_t poolExhaustedDrops = 0;
 
-    client.onPcmChunk = [&](const std::byte* pcm, size_t len,
-                            int64_t serverTimeUs) {
+    client.onAudioChunk = [&](snapclient::Codec codec, const std::byte* payload,
+                              size_t len, int64_t serverTimeUs) {
       if (!sync.latencyReady()) {
         return;
       }
       std::lock_guard<std::mutex> lock(queueMutex);
-      if (queue.size() >= kPcmPoolSlotCount) {
+      if (queue.size() >= kQueueCapacity) {
         queueFullDrops++;
       } else {
         QueuedChunk item;
         item.serverTimeUs = serverTimeUs;
-        item.pcm = pcmPool.acquire(pcm, len);
-        // Pool exhaustion queues a silent placeholder (item.pcm left
+        item.codec = codec;
+        // Pool exhaustion queues a silent placeholder (item.payload left
         // empty) instead of dropping the chunk outright - a dropped
         // chunk leaves a gap in the played frame count that the
-        // server's clock doesn't have, which is what was driving
-        // SyncEngine's runaway resyncs.
-        if (!item.pcm) {
-          poolExhaustedDrops++;
-        }
+        // server's clock doesn't have. See silencePlayed below for how
+        // often this actually results in audible silence.
+        item.payload = pcmPool->acquire(payload, len);
+        // chunkAvailable is an uncapped counting semaphore; the consumer
+        // only take()s it when idle, not once per dequeue - giving on
+        // every push would grow the count unbounded, and take() then
+        // never actually waits.
+        const bool wasEmpty = queue.empty();
         queue.push_back(std::move(item));
+        if (wasEmpty) {
+          chunkAvailable.give();
+        }
       }
 
       // Sustained overload logs every chunk otherwise - the blocking
       // UART write itself then becomes part of the overload, up to
-      // starving other tasks long enough to trip the watchdog.
+      // starving other tasks long enough to trip the watchdog. 30s, not
+      // 1s: an occasional single dropped chunk is normal jitter, not
+      // something worth a line every second.
       const int64_t dropLogNow = nowUs();
-      if (dropLogNow - lastDropLogUs >= 1000000) {
+      if (dropLogNow - lastDropLogUs >= 30000000) {
         lastDropLogUs = dropLogNow;
-        if (queueFullDrops > 0 || poolExhaustedDrops > 0) {
-          BELL_LOG(warn, kLogTag,
-                   "dropped {} chunks (queue full), queued {} silent "
-                   "(pool exhausted) in the last second",
-                   queueFullDrops, poolExhaustedDrops);
+        if (queueFullDrops > 0) {
+          BELL_LOG(warn, kLogTag, "dropped {} chunks (queue full) in the last 30s",
+                   queueFullDrops);
           queueFullDrops = 0;
-          poolExhaustedDrops = 0;
         }
       }
     };
@@ -282,8 +364,15 @@ class SnapclientTask : public bell::Task {
 
     std::vector<int16_t> scratch;
     const std::vector<int16_t> silenceInput(kFramesPerChunk * 2, 0);
+    // Heap, not stack (like scratch above) - this task's stack is sized
+    // tight against a measured high-water mark, and a buffer this size
+    // is enough to overflow it.
+    std::vector<std::byte> decodeBuf(kPcmChunkBytes);
     int64_t lastQueueLogUs = 0;
     int64_t lastTimingLogUs = 0;
+    int64_t lastDropYieldUs = 0;
+    int64_t lastStackLogUs = 0;
+    int64_t lastSilenceLogUs = 0;
     int64_t dspSumUs = 0, dspMaxUs = 0;
     int64_t i2sSumUs = 0, i2sMaxUs = 0;
     size_t dspSamples = 0, i2sSamples = 0;
@@ -308,31 +397,70 @@ class SnapclientTask : public bell::Task {
                  esp_get_free_heap_size());
       }
 
-      if (queueDepth == 0) {
-        if (pmLock != nullptr && playbackActive) {
-          esp_pm_lock_release(pmLock);
-          playbackActive = false;
+      // Stack sizes below (SnapclientTask, SnapcastClient) are both fixed
+      // guesses, not measured - this reports real headroom so they can be
+      // right-sized instead of guessed again.
+      if (logNow - lastStackLogUs >= 10000000) {
+        lastStackLogUs = logNow;
+        BELL_LOG(info, kLogTag,
+                 "stack headroom: snapclient_task={}B snapcast_client={}B",
+                 getStackHighWaterMarkWords() * sizeof(StackType_t),
+                 client.stackHighWaterMarkWords() * sizeof(StackType_t));
+      }
+
+      // Aggregated, not logged per-occurrence at either substitution site
+      // below (pool exhausted, opus decode failed) - the same sustained-
+      // overload/UART-stall reasoning as the queue-full log above.
+      if (logNow - lastSilenceLogUs >= 30000000) {
+        lastSilenceLogUs = logNow;
+        if (silencePlayed > 0) {
+          BELL_LOG(warn, kLogTag,
+                   "played {} chunks as silence (pool exhausted or opus "
+                   "decode failed) in the last 30s",
+                   silencePlayed);
+          silencePlayed = 0;
         }
-        // At CONFIG_FREERTOS_HZ=100 (10ms/tick), anything under 10ms
-        // rounds down to 0 ticks - vTaskDelay(0) doesn't actually block,
-        // just yields once, which isn't enough to let CPU1's idle task
-        // feed the watchdog under sustained load.
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+
+      if (queueDepth == 0) {
+        // Woken as soon as onAudioChunk pushes something - the 10ms
+        // timeout is only a fallback. Below CONFIG_FREERTOS_HZ=100's
+        // 10ms tick, vTaskDelay rounds to 0 and just yields once, not
+        // enough for CPU1's idle task to feed the watchdog under
+        // sustained load.
+        chunkAvailable.take(10);
         continue;
       }
 
-      constexpr size_t kBytesPerFrame = 2 * sizeof(int16_t);
       const std::byte* dspInput;
       size_t dspInputLen;
       size_t frames;
-      if (item.pcm) {
-        dspInput = item.pcm.data();
-        dspInputLen = item.pcm.size();
-        frames = dspInputLen / kBytesPerFrame;
-      } else {
+      if (!item.payload) {
+        // Pool-exhausted placeholder - no payload was ever stored for
+        // this chunk, encoded or not.
         dspInput = reinterpret_cast<const std::byte*>(silenceInput.data());
         dspInputLen = silenceInput.size() * sizeof(int16_t);
         frames = kFramesPerChunk;
+        silencePlayed++;
+      } else if (item.codec == snapclient::Codec::Opus) {
+        auto decoded = client.decodeOpus(
+            tcb::span<const std::byte>(item.payload.data(),
+                                       item.payload.size()),
+            decodeBuf.data(), decodeBuf.size());
+        if (!decoded) {
+          dspInput = reinterpret_cast<const std::byte*>(silenceInput.data());
+          dspInputLen = silenceInput.size() * sizeof(int16_t);
+          frames = kFramesPerChunk;
+          silencePlayed++;
+        } else {
+          dspInput = decodeBuf.data();
+          dspInputLen = *decoded;
+          frames = dspInputLen / kBytesPerFrame;
+        }
+      } else {
+        dspInput = item.payload.data();
+        dspInputLen = item.payload.size();
+        frames = dspInputLen / kBytesPerFrame;
       }
       scratch.resize(dspInputLen / sizeof(int16_t));
       const int64_t dspStartUs = nowUs();
@@ -344,8 +472,16 @@ class SnapclientTask : public bell::Task {
       dspMaxUs = std::max(dspMaxUs, dspUs);
       dspSamples++;
 
+      // Recomputed fresh per chunk, not settings-cached: outputBufferUs()
+      // reflects where the previous write() actually landed in the DMA
+      // ring, not a fixed assumption about it.
+      const int32_t dacLatencyUs =
+          static_cast<int32_t>(serverLatencyMs) * 1000 +
+          static_cast<int32_t>(i2sSink.outputBufferUs());
+
       for (;;) {
-        auto result = sync.evaluate(item.serverTimeUs, nowUs(), queueDepth);
+        auto result = sync.evaluate(item.serverTimeUs, nowUs(), queueDepth,
+                                    dacLatencyUs);
         if (result.decision == snapclient::PlayDecision::WaitMore) {
           std::this_thread::sleep_for(
               std::chrono::microseconds(result.waitUs));
@@ -354,26 +490,27 @@ class SnapclientTask : public bell::Task {
         if (result.decision == snapclient::PlayDecision::Play) {
           chunksPlayed++;
 
-          if (pmLock != nullptr && !playbackActive) {
-            esp_pm_lock_acquire(pmLock);
-            playbackActive = true;
-          }
-
           const auto* writeStart =
               reinterpret_cast<const std::byte*>(scratch.data());
           size_t writeLen = scratch.size() * sizeof(int16_t);
 
-          // Realizes frameAdjustment on the actual I2S bytes: -1 drops the
-          // last frame from this write (catch up), +1 writes it again
-          // after (slow down).
-          if (result.frameAdjustment < 0 && writeLen >= kBytesPerFrame) {
-            writeLen -= kBytesPerFrame;
+          // Realizes frameAdjustment on the actual I2S bytes: negative
+          // drops that many frames from this write (catch up), positive
+          // writes them again after (slow down). Magnitude scales with
+          // how far off sync is, not fixed to one frame - see
+          // SyncEngine.cpp.
+          const size_t adjustFrames =
+              static_cast<size_t>(result.frameAdjustment < 0
+                                      ? -result.frameAdjustment
+                                      : result.frameAdjustment);
+          const size_t adjustBytes = adjustFrames * kBytesPerFrame;
+          if (result.frameAdjustment < 0 && writeLen >= adjustBytes) {
+            writeLen -= adjustBytes;
           }
           const int64_t i2sStartUs = nowUs();
           i2sSink.write(writeStart, writeLen);
-          if (result.frameAdjustment > 0 && writeLen >= kBytesPerFrame) {
-            i2sSink.write(writeStart + writeLen - kBytesPerFrame,
-                          kBytesPerFrame);
+          if (result.frameAdjustment > 0 && writeLen >= adjustBytes) {
+            i2sSink.write(writeStart + writeLen - adjustBytes, adjustBytes);
           }
           const int64_t i2sUs = nowUs() - i2sStartUs;
           i2sSumUs += i2sUs;
@@ -386,6 +523,31 @@ class SnapclientTask : public bell::Task {
           sync.onFramesWritten(frames + result.frameAdjustment);
         } else {
           chunksDropped++;
+          // Unlike Play (blocks on I2S write) or WaitMore (sleeps), this
+          // path doesn't yield - sustained drops would spin this core hot
+          // enough to starve the network task, delaying chunks further
+          // and keeping every next one too late to recover. Throttled,
+          // not per-drop, so draining a short burst isn't itself
+          // rate-limited below real-time.
+          const int64_t yieldNow = nowUs();
+          if (yieldNow - lastDropYieldUs >= 20000) {
+            lastDropYieldUs = yieldNow;
+            // take(), not sleep_for(): returns as soon as a new chunk
+            // arrives instead of always waiting the full timeout.
+            chunkAvailable.take(10);
+          }
+
+          if (!sync.isPlaying()) {
+            // Still resyncing after this drop - the rest of the backlog
+            // only gets staler evaluated one at a time in FIFO order,
+            // since real time keeps advancing while working through it.
+            // Jump straight to the newest queued chunk instead.
+            std::lock_guard<std::mutex> lock(queueMutex);
+            while (queue.size() > 1) {
+              queue.pop_front();
+              chunksDropped++;
+            }
+          }
         }
         break;
       }
@@ -473,19 +635,6 @@ extern "C" void app_main(void) {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
-
-  // DFS only, not light sleep: CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP puts
-  // WiFi/lwIP's own buffers in PSRAM, and light sleep's PSRAM bus
-  // quiescing around each sleep/wake cycle isn't safe to combine with
-  // that on this board.
-  esp_pm_config_t pmConfig = {
-      .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-      .min_freq_mhz = 40,
-      .light_sleep_enable = false,
-  };
-  if (esp_err_t pmErr = esp_pm_configure(&pmConfig); pmErr != ESP_OK) {
-    ESP_LOGW(TAG, "esp_pm_configure failed: %d", pmErr);
-  }
 
   wifiStationInit();
 

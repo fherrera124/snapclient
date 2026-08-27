@@ -1,6 +1,7 @@
 #include <bell/Logger.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -11,6 +12,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <tcb/span.hpp>
 
 #include "snapclient/ControlServer.h"
 #include "snapclient/ControlSettings.h"
@@ -46,8 +49,16 @@ int64_t nowUs() {
 
 struct QueuedChunk {
   int64_t serverTimeUs;
-  std::vector<int16_t> pcm;
+  snapclient::Codec codec = snapclient::Codec::None;
+  // Encoded (Opus) or raw (Pcm codec) payload, exactly as received -
+  // decoding happens later, in the consumer loop below.
+  std::vector<std::byte> payload;
 };
+
+// Matches main.cpp's (ESP32 target) kFramesPerChunk/kBytesPerFrame
+// assumption: this deployment's Opus stream is always 20ms/960 samples,
+// stereo S16.
+constexpr size_t kPcmChunkBytes = 960 * 2 * sizeof(int16_t);
 
 std::optional<snapclient::SnapcastDiscovery::Found> discoverServer(
     int timeoutMs) {
@@ -169,14 +180,23 @@ int runSnapcastTest(const std::string& host, uint16_t port,
 
   client.onServerSettings = [&](const snapclient::ServerSettings& s) {
     bufferMs = s.bufferMs;
-    sync.onSettingsChanged(bufferMs, 0, static_cast<uint32_t>(sampleRate));
+    sync.onSettingsChanged(bufferMs, static_cast<uint32_t>(sampleRate));
     BELL_LOG(info, kLogTag, "server settings: bufferMs={} volume={} muted={}",
              s.bufferMs, s.volume, s.muted);
   };
 
-  client.onCodecReady = [&](const bell::audio::Format& fmt) {
+  client.onCodecReady = [&](snapclient::Codec /*codec*/,
+                            const bell::audio::Format& fmt) {
     sampleRate = fmt.getSampleRate();
-    sync.onSettingsChanged(bufferMs, 0, fmt.getSampleRateValue());
+    sync.onSettingsChanged(bufferMs, fmt.getSampleRateValue());
+    {
+      // A still-queued, not-yet-decoded chunk from before this codec
+      // header would decode against the *new* decoder instance
+      // setupDecode() just recreated inside SnapcastClient - drop it
+      // instead of risking garbage output.
+      std::lock_guard<std::mutex> lock(queueMutex);
+      queue.clear();
+    }
     BELL_LOG(info, kLogTag, "codec ready: {} Hz, {} ch",
              fmt.getSampleRateValue(), fmt.getNumChannels());
   };
@@ -189,15 +209,15 @@ int runSnapcastTest(const std::string& host, uint16_t port,
     }
   };
 
-  client.onPcmChunk = [&](const std::byte* pcm, size_t len,
-                          int64_t serverTimeUs) {
+  client.onAudioChunk = [&](snapclient::Codec codec, const std::byte* payload,
+                            size_t len, int64_t serverTimeUs) {
     if (!sync.latencyReady()) {
       return;
     }
     QueuedChunk item;
     item.serverTimeUs = serverTimeUs;
-    item.pcm.resize(len / sizeof(int16_t));
-    std::memcpy(item.pcm.data(), pcm, len);
+    item.codec = codec;
+    item.payload.assign(payload, payload + len);
 
     std::lock_guard<std::mutex> lock(queueMutex);
     queue.push_back(std::move(item));
@@ -206,6 +226,9 @@ int runSnapcastTest(const std::string& host, uint16_t port,
   BELL_LOG(info, kLogTag, "connecting to {}:{}...", config.host, config.port);
 
   std::vector<int16_t> scratch;
+  // decodeOpus()'s output buffer - one chunk's worth of decoded PCM,
+  // reused every iteration instead of allocated per chunk.
+  std::array<std::byte, kPcmChunkBytes> decodeBuf{};
   const auto testEnd = std::chrono::steady_clock::now() + std::chrono::seconds(15);
   while (std::chrono::steady_clock::now() < testEnd) {
     QueuedChunk item;
@@ -225,15 +248,30 @@ int runSnapcastTest(const std::string& host, uint16_t port,
       continue;
     }
 
-    const size_t frames = item.pcm.size() / 2;
-    scratch.resize(item.pcm.size());
-    dsp.process(reinterpret_cast<const std::byte*>(item.pcm.data()),
-               item.pcm.size() * sizeof(int16_t),
+    const std::byte* dspInput;
+    size_t dspInputLen;
+    if (item.codec == snapclient::Codec::Opus) {
+      auto decoded = client.decodeOpus(
+          tcb::span<const std::byte>(item.payload.data(), item.payload.size()),
+          decodeBuf.data(), decodeBuf.size());
+      if (!decoded) {
+        BELL_LOG(warn, kLogTag, "opus decode failed: {}", decoded.error());
+        continue;
+      }
+      dspInput = decodeBuf.data();
+      dspInputLen = *decoded;
+    } else {
+      dspInput = item.payload.data();
+      dspInputLen = item.payload.size();
+    }
+    const size_t frames = dspInputLen / (2 * sizeof(int16_t));
+    scratch.resize(dspInputLen / sizeof(int16_t));
+    dsp.process(dspInput, dspInputLen,
                reinterpret_cast<std::byte*>(scratch.data()),
                scratch.size() * sizeof(int16_t), sampleRate);
 
     for (;;) {
-      auto result = sync.evaluate(item.serverTimeUs, nowUs(), queueDepth);
+      auto result = sync.evaluate(item.serverTimeUs, nowUs(), queueDepth, 0);
       if (result.decision == snapclient::PlayDecision::WaitMore) {
         std::this_thread::sleep_for(std::chrono::microseconds(result.waitUs));
         continue;
