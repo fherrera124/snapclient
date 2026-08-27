@@ -15,10 +15,8 @@ SyncEngine::SyncEngine()
       shortMedian_(99),
       miniMedian_(19) {}
 
-void SyncEngine::onSettingsChanged(int32_t bufferMs, int32_t dacLatencyMs,
-                                   uint32_t sampleRate) {
+void SyncEngine::onSettingsChanged(int32_t bufferMs, uint32_t sampleRate) {
   bufferMs_ = bufferMs;
-  dacLatencyMs_ = dacLatencyMs;
   sampleRate_ = sampleRate;
   playing_ = false;
   shortMedian_.clear();
@@ -42,23 +40,32 @@ void SyncEngine::reset() {
 }
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
-                                size_t queueDepth) {
+                                size_t queueDepth, int32_t dacLatencyUs) {
   const int64_t diffToServer = timeFilter_.offsetAt(nowUs);
   const int64_t serverNowUs = nowUs + diffToServer;
   const int64_t bufferUs = int64_t{bufferMs_} * 1000;
-  const int64_t dacLatencyUs = int64_t{dacLatencyMs_} * 1000;
 
   if (!playing_) {
     const int64_t age =
         serverNowUs - chunkServerTimeUs - bufferUs + dacLatencyUs;
-    if (age < -kInitialSyncToleranceUs) {
+    if (age < -kInitialSyncEarlyToleranceUs) {
       return {PlayDecision::WaitMore, -age, 0, false};
     }
-    if (age > kInitialSyncToleranceUs) {
-      BELL_LOG(warn, kLogTag,
-               "initial sync drop: age={} diffToServer={} bufferUs={} "
-               "dacLatencyUs={}",
-               age, diffToServer, bufferUs, dacLatencyUs);
+    if (age > kInitialSyncLateToleranceUs) {
+      // A backlog of these can be long enough that logging every one of
+      // them (blocking UART write, unlike the aggregate log below) makes
+      // draining it itself slower than chunks keep arriving, so the
+      // backlog never shrinks.
+      initialSyncDropCount_++;
+      if (nowUs - lastInitialSyncDropLogUs_ >= 1000000) {
+        lastInitialSyncDropLogUs_ = nowUs;
+        BELL_LOG(warn, kLogTag,
+                 "initial sync drop x{}: age={} diffToServer={} bufferUs={} "
+                 "dacLatencyUs={}",
+                 initialSyncDropCount_, age, diffToServer, bufferUs,
+                 dacLatencyUs);
+        initialSyncDropCount_ = 0;
+      }
       return {PlayDecision::DropLate, 0, 0, false};
     }
     playbackStartTimeUs_ = nowUs;
@@ -96,13 +103,8 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
 
   int frameAdjustment = 0;
   if (shortMedian_.full()) {
-    const int64_t shortM = shortMedian_.median();
-    const int64_t miniM = miniMedian_.median();
-    if (shortM < -kShortOffsetUs && miniM < -kMiniOffsetUs && age < -kMiniOffsetUs) {
-      frameAdjustment = 1;
-    } else if (shortM > kShortOffsetUs && miniM > kMiniOffsetUs && age > kMiniOffsetUs) {
-      frameAdjustment = -1;
-    }
+    frameAdjustment = steadyStateFrameAdjustment(
+        shortMedian_.median(), miniMedian_.median(), age);
   }
 
   return {PlayDecision::Play, 0, frameAdjustment, false};
@@ -110,6 +112,20 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
 
 void SyncEngine::onFramesWritten(size_t frameCount) {
   samplesWritten_ += static_cast<int64_t>(frameCount);
+}
+
+int SyncEngine::steadyStateFrameAdjustment(int64_t shortM, int64_t miniM,
+                                           int64_t age) const {
+  // shortM < 0: actual play position is ahead of target (running early) -
+  // slow down by duplicating a frame. shortM > 0: running late - catch up
+  // by skipping one. See SyncResult::frameAdjustment's sign convention.
+  if (shortM < -kShortOffsetUs && miniM < -kMiniOffsetUs && age < -kMiniOffsetUs) {
+    return 1;
+  }
+  if (shortM > kShortOffsetUs && miniM > kMiniOffsetUs && age > kMiniOffsetUs) {
+    return -1;
+  }
+  return 0;
 }
 
 }  // namespace snapclient
