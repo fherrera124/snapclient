@@ -39,8 +39,11 @@ class AudioSinkI2S {
   void write(const std::byte* pcm, size_t len);
 
   // Time currently sitting in the DMA ring between write() and the DAC
-  // actually playing it, at the last-configured sample rate. 0 before the
-  // first configure() call.
+  // actually playing it, at the last-configured sample rate - tracks how
+  // far the ring's write cursor sits into its current descriptor (updated
+  // by write()), not just the ring's total capacity, since a chunk
+  // smaller than one descriptor (the usual case) never actually fills it.
+  // 0 before the first configure() call.
   uint32_t outputBufferUs() const;
 
   // No-op if Config::mutePin is GPIO_NUM_NC.
@@ -52,6 +55,9 @@ class AudioSinkI2S {
   Config config_;
   i2s_chan_handle_t txChan_ = nullptr;
   uint32_t currentSampleRate_ = 0;
+  // Frames written since the last full-descriptor boundary, mod one
+  // descriptor's frame capacity - see outputBufferUs().
+  uint32_t framesIntoCurrentDescriptor_ = 0;
 
   void teardownChannel();
   void primeSilence();

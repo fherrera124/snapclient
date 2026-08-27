@@ -53,10 +53,9 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
 
   i2s_chan_config_t chanConfig =
       I2S_CHANNEL_DEFAULT_CONFIG(config_.port, I2S_ROLE_MASTER);
-  // 4 descriptors (~85ms of hardware buffering at 48kHz) instead of 2
-  // (~43ms) - i2s_channel_write() blocks until the DMA queue has room, and
-  // 2 descriptors left too little slack to absorb scheduling jitter
-  // (measured write() spikes up to ~52ms against a 20ms/chunk budget).
+  // i2s_channel_write() blocks until the DMA queue has room - kDmaDescNum
+  // sets how much hardware buffering absorbs write() scheduling jitter
+  // before that blocking becomes audible as a stall.
   chanConfig.dma_desc_num = kDmaDescNum;
   chanConfig.dma_frame_num = kDmaFrameNum;
   chanConfig.auto_clear = true;
@@ -101,6 +100,7 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
   }
 
   currentSampleRate_ = sampleRate;
+  framesIntoCurrentDescriptor_ = 0;
   primeSilence();
   setMuted(false);
 }
@@ -110,11 +110,18 @@ uint32_t AudioSinkI2S::outputBufferUs() const {
   // ring before actually reaching the DAC - SyncEngine's played-frame
   // count needs this added on top of the server-configured DAC latency,
   // or it targets a point in time earlier than what's really playing.
+  //
+  // (kDmaDescNum - 1) full descriptors plus however far write() has
+  // landed into the current one, not kDmaDescNum flat - a chunk
+  // (kFramesPerChunk) is smaller than one descriptor (kDmaFrameNum), so a
+  // single write() essentially never completes filling it, and assuming a
+  // full ring overstates the real latency.
   if (currentSampleRate_ == 0) {
     return 0;
   }
-  return static_cast<uint32_t>(uint64_t{kDmaDescNum} * kDmaFrameNum *
-                               1000000 / currentSampleRate_);
+  return static_cast<uint32_t>(
+      (uint64_t{kDmaDescNum - 1} * kDmaFrameNum + framesIntoCurrentDescriptor_) *
+      1000000 / currentSampleRate_);
 }
 
 void AudioSinkI2S::primeSilence() {
@@ -147,6 +154,9 @@ void AudioSinkI2S::write(const std::byte* pcm, size_t len) {
       break;
     }
     written += chunkWritten;
+    framesIntoCurrentDescriptor_ =
+        (framesIntoCurrentDescriptor_ + chunkWritten / kBytesPerFrame) %
+        kDmaFrameNum;
   }
 }
 
