@@ -13,6 +13,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
@@ -448,6 +449,14 @@ extern "C" void app_main(void) {
   }
 
   wifiStationInit();
+
+  // bell's logger timestamps every line with wall-clock time - without
+  // this they're meaningless until the RTC happens to be right. Syncs
+  // in the background once WiFi is up; doesn't block startup on it.
+  esp_sntp_config_t sntpConfig = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+  if (esp_err_t sntpErr = esp_netif_sntp_init(&sntpConfig); sntpErr != ESP_OK) {
+    ESP_LOGW(TAG, "esp_netif_sntp_init failed: %d", sntpErr);
+  }
 
   bell::registerDefaultLogger();
 
