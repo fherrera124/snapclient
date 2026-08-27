@@ -155,11 +155,9 @@ class SnapclientTask : public bell::Task {
     size_t chunksDropped = 0;
     size_t corrections = 0;
 
-    // Pins the clock to max frequency only while frames are actually going
-    // to the DAC (see the queueDepth==0 and Play branches below) - idle
-    // between chunks lets esp_pm_configure's DFS drop it the rest of the
-    // time. A null handle (creation failed, e.g. PM disabled in this
-    // build) just means acquire/release below are skipped.
+    // Held only while frames are going to the DAC, so DFS can drop the
+    // clock the rest of the time. Null handle (e.g. PM disabled) just
+    // makes acquire/release below no-ops.
     esp_pm_lock_handle_t pmLock = nullptr;
     if (esp_err_t pmErr = esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0,
                                              "snapclient_playback", &pmLock);
@@ -438,11 +436,8 @@ extern "C" void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
 
-  // Idle most of the time between chunks - let the clock drop then instead
-  // of pinning it at max always. SnapclientTask holds a pm lock back up to
-  // max frequency only while frames are actually going to the DAC. Fails
-  // with ESP_ERR_NOT_SUPPORTED if CONFIG_PM_ENABLE ends up off in this
-  // build, which is fine to just log and continue without.
+  // DFS + light sleep: idle most of the runtime between chunks, so let
+  // the clock drop instead of sitting at max always.
   esp_pm_config_t pmConfig = {
       .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
       .min_freq_mhz = 40,
