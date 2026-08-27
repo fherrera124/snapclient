@@ -2,6 +2,54 @@
 
 namespace snapclient {
 
+// Shared by the settings pages, not the nav shell (which has its own
+// full-viewport layout).
+const char kSharedStyleCss[] = R"CSSFILE(
+body { font-family: Arial, sans-serif; max-width: 480px; margin: 1.5rem auto; padding: 0 1rem; }
+h1 { font-size: 1.1rem; }
+label { display: block; margin-top: 0.75rem; font-weight: 600; }
+input, select { width: 100%; padding: 0.4rem; margin-top: 0.25rem; box-sizing: border-box; font-family: Arial, sans-serif; }
+
+input:focus, select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0,123,255,0.1);
+}
+
+.success, .error, .warning, .info {
+  padding: 15px;
+  border-radius: 4px;
+  margin: 1rem 0;
+  border: 1px solid transparent;
+}
+.success { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+.error { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+.warning { background-color: #fff3cd; color: #856404; border-color: #ffeeba; }
+.info { background-color: #d1ecf1; color: #0c5460; border-color: #bee5eb; }
+
+.btn {
+  padding: 10px 20px;
+  font-size: 14px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s, transform 0.1s;
+  font-family: Arial, sans-serif;
+  margin-top: 1rem;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.btn-primary { background-color: #007bff; color: white; }
+.btn-primary:hover:not(:disabled) { background-color: #0056b3; }
+.btn-secondary { background-color: #6c757d; color: white; }
+.btn-secondary:hover:not(:disabled) { background-color: #545b62; }
+
+@media (max-width: 768px) {
+  body { padding: 0 10px; }
+  .btn { padding: 8px 16px; font-size: 13px; }
+}
+)CSSFILE";
+
 const char kNavShellHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -51,20 +99,12 @@ const char kGeneralSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>General settings</title>
+<link rel="stylesheet" href="styles.css">
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 1.5rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.1rem; }
-  label { display: block; margin-top: 0.75rem; font-weight: 600; }
-  input { width: 100%; padding: 0.4rem; margin-top: 0.25rem; box-sizing: border-box; }
-  button { margin-top: 1rem; padding: 0.5rem 1rem; }
-  #status.ok { color: green; }
-  #status.error { color: red; }
   .hostRow { display: flex; gap: 0.5rem; }
   .hostRow input { flex: 1; }
   .hostRow button { margin-top: 0; white-space: nowrap; }
-  #detectStatus { font-size: 0.85rem; margin-top: 0.25rem; }
-  #detectStatus.ok { color: green; }
-  #detectStatus.error { color: red; }
+  #detectStatus { font-size: 0.85rem; margin-top: 0.25rem; padding: 0.4rem 0.6rem; }
 </style>
 </head>
 <body>
@@ -73,7 +113,7 @@ const char kGeneralSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <label for="host">Server host</label>
   <div class="hostRow">
     <input id="host" type="text" required>
-    <button type="button" id="detectBtn">Detect</button>
+    <button type="button" id="detectBtn" class="btn btn-secondary">Detect</button>
   </div>
   <p id="detectStatus"></p>
 
@@ -89,7 +129,7 @@ const char kGeneralSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <label for="logPort">Target port</label>
   <input id="logPort" type="number" min="1" max="65535">
 
-  <button type="submit">Save</button>
+  <button type="submit" class="btn btn-primary">Save</button>
   <p id="status"></p>
 </form>
 
@@ -120,7 +160,7 @@ document.getElementById('detectBtn').addEventListener('click', async () => {
     document.getElementById('host').value = found.host;
     document.getElementById('port').value = found.port;
     statusEl.textContent = `Found ${found.host}:${found.port}`;
-    statusEl.className = 'ok';
+    statusEl.className = 'success';
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
     statusEl.className = 'error';
@@ -152,7 +192,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
       return;
     }
     statusEl.textContent = 'Saved.';
-    statusEl.className = 'ok';
+    statusEl.className = 'success';
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
     statusEl.className = 'error';
@@ -170,15 +210,9 @@ const char kDspSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>DSP settings</title>
+<link rel="stylesheet" href="styles.css">
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 1.5rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.1rem; }
-  label { display: block; margin-top: 0.75rem; font-weight: 600; }
-  input, select { width: 100%; padding: 0.4rem; margin-top: 0.25rem; box-sizing: border-box; }
   #hint { font-size: 0.85rem; color: #555; margin-top: 0.5rem; }
-  button { margin-top: 1rem; padding: 0.5rem 1rem; }
-  #status.ok { color: green; }
-  #status.error { color: red; }
 </style>
 </head>
 <body>
@@ -205,7 +239,7 @@ const char kDspSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   <label for="gainTertiary">Tertiary gain (dB)</label>
   <input id="gainTertiary" type="number" step="any">
 
-  <button type="submit">Save</button>
+  <button type="submit" class="btn btn-primary">Save</button>
   <p id="status"></p>
 </form>
 
@@ -267,7 +301,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
     }
     state = await res.json();
     statusEl.textContent = 'Saved.';
-    statusEl.className = 'ok';
+    statusEl.className = 'success';
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
     statusEl.className = 'error';
@@ -285,14 +319,8 @@ const char kDacSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>DAC / EQ settings</title>
+<link rel="stylesheet" href="styles.css">
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 1.5rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.1rem; }
-  label { display: block; margin-top: 0.75rem; font-weight: 600; }
-  input, select { width: 100%; padding: 0.4rem; margin-top: 0.25rem; box-sizing: border-box; }
-  button { margin-top: 1rem; padding: 0.5rem 1rem; }
-  #status.ok { color: green; }
-  #status.error { color: red; }
   .eqBandRow { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.4rem; }
   .eqBandRow span { width: 4.5rem; font-size: 0.85rem; }
   .eqBandRow input { margin-top: 0; }
@@ -300,7 +328,7 @@ const char kDacSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 </head>
 <body>
 <h1>DAC (TAS5805M)</h1>
-<p id="unavailable" style="display:none">DAC control isn't available on this device.</p>
+<p id="unavailable" class="info" style="display:none">DAC control isn't available on this device.</p>
 <form id="form">
   <label for="analogGain">Analog gain (0 = 0dB, 31 = -15.5dB)</label>
   <input id="analogGain" type="number" min="0" max="31" required>
@@ -366,7 +394,7 @@ const char kDacSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 
   <div id="eqBands"></div>
 
-  <button type="submit">Save</button>
+  <button type="submit" class="btn btn-primary">Save</button>
   <p id="status"></p>
   <p id="faults"></p>
 </form>
@@ -412,7 +440,10 @@ async function loadFaults() {
   try {
     const res = await fetch('/api/dac/faults');
     if (!res.ok) return;
-    document.getElementById('faults').textContent = faultsText(await res.json());
+    const faults = await res.json();
+    const el = document.getElementById('faults');
+    el.textContent = faultsText(faults);
+    el.className = Object.values(faults).some(Boolean) ? 'error' : 'success';
   } catch (err) {
     // Transient - next poll will retry.
   }
@@ -483,7 +514,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
       return;
     }
     statusEl.textContent = 'Saved.';
-    statusEl.className = 'ok';
+    statusEl.className = 'success';
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
     statusEl.className = 'error';

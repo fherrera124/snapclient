@@ -37,6 +37,14 @@ void ControlServer::registerRoutes() {
               200, {{"Content-Type", "text/html; charset=utf-8"}}, html);
         });
   };
+  httpServer_.registerGet(
+      "/styles.css",
+      [](const std::unique_ptr<bell::http::Reader>& /*request*/,
+        const std::unique_ptr<bell::http::Writer>& response,
+        const std::unordered_map<std::string, std::string>& /*params*/) {
+        (void)response->writeResponseWithBody(
+            200, {{"Content-Type", "text/css"}}, kSharedStyleCss);
+      });
   registerHtmlPage("/", kNavShellHtml);
   registerHtmlPage("/general-settings.html", kGeneralSettingsHtml);
   registerHtmlPage("/dsp-settings.html", kDspSettingsHtml);

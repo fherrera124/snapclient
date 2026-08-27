@@ -2,6 +2,7 @@
 
 namespace snapclient {
 
+extern const char kSharedStyleCss[];
 extern const char kNavShellHtml[];
 extern const char kGeneralSettingsHtml[];
 extern const char kDspSettingsHtml[];
