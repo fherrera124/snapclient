@@ -19,13 +19,23 @@ const char kSettingsUiHtml[] = R"HTMLPAGE(<!DOCTYPE html>
   .eqBandRow { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.4rem; }
   .eqBandRow span { width: 4.5rem; font-size: 0.85rem; }
   .eqBandRow input { margin-top: 0; }
+  .hostRow { display: flex; gap: 0.5rem; }
+  .hostRow input { flex: 1; }
+  .hostRow button { margin-top: 0; white-space: nowrap; }
+  #detectStatus { font-size: 0.85rem; margin-top: 0.25rem; }
+  #detectStatus.ok { color: green; }
+  #detectStatus.error { color: red; }
 </style>
 </head>
 <body>
 <h1>snapclient settings</h1>
 <form id="form">
   <label for="host">Server host</label>
-  <input id="host" type="text" required>
+  <div class="hostRow">
+    <input id="host" type="text" required>
+    <button type="button" id="detectBtn">Detect</button>
+  </div>
+  <p id="detectStatus"></p>
 
   <label for="port">Server port</label>
   <input id="port" type="number" min="1" max="65535" required>
@@ -170,6 +180,29 @@ async function load() {
 
 document.getElementById('flow').addEventListener('change', (e) => {
   populateFlowFields(e.target.value);
+});
+
+document.getElementById('detectBtn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('detectStatus');
+  statusEl.textContent = 'Searching...';
+  statusEl.className = '';
+  try {
+    const res = await fetch('/api/discover');
+    if (!res.ok) {
+      const err = await res.json();
+      statusEl.textContent = 'Not found: ' + (err.error || res.status);
+      statusEl.className = 'error';
+      return;
+    }
+    const found = await res.json();
+    document.getElementById('host').value = found.host;
+    document.getElementById('port').value = found.port;
+    statusEl.textContent = `Found ${found.host}:${found.port}`;
+    statusEl.className = 'ok';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.className = 'error';
+  }
 });
 
 document.getElementById('form').addEventListener('submit', async (e) => {

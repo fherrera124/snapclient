@@ -1,6 +1,10 @@
 #include "snapclient/ControlServer.h"
 
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -9,6 +13,7 @@
 #include <tao/json.hpp>
 
 #include "snapclient/SettingsUiHtml.h"
+#include "snapclient/SnapcastDiscovery.h"
 
 namespace snapclient {
 
@@ -39,6 +44,46 @@ void ControlServer::registerRoutes() {
             const std::unordered_map<std::string, std::string>& /*params*/) {
         (void)response->writeResponseWithBody(
             200, {{"Content-Type", "application/json"}}, settings_.toJson());
+      });
+
+  httpServer_.registerGet(
+      "/api/discover",
+      [](const std::unique_ptr<bell::http::Reader>& /*request*/,
+        const std::unique_ptr<bell::http::Writer>& response,
+        const std::unordered_map<std::string, std::string>& /*params*/) {
+        // Discovery stops via ~SnapcastDiscovery when this goes out of
+        // scope below - no explicit stop() call needed for a one-shot browse.
+        SnapcastDiscovery discovery;
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::optional<SnapcastDiscovery::Found> found;
+
+        auto startRes = discovery.start(
+            [&](const SnapcastDiscovery::Found& f) {
+              std::lock_guard<std::mutex> lock(mutex);
+              if (!found) {
+                found = f;
+                cv.notify_one();
+              }
+            });
+        if (startRes) {
+          std::unique_lock<std::mutex> lock(mutex);
+          cv.wait_for(lock, std::chrono::milliseconds(4000),
+                     [&] { return found.has_value(); });
+        }
+
+        if (!found) {
+          (void)response->writeResponseWithBody(
+              404, {{"Content-Type", "application/json"}},
+              R"({"error":"no server found"})");
+          return;
+        }
+        tao::json::value obj;
+        obj["host"] = found->host;
+        obj["port"] = found->port;
+        (void)response->writeResponseWithBody(
+            200, {{"Content-Type", "application/json"}},
+            tao::json::to_string(obj));
       });
 
   httpServer_.registerPost(
