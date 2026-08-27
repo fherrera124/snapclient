@@ -374,6 +374,12 @@ void onWifiEvent(void* /*arg*/, esp_event_base_t eventBase, int32_t eventId,
   } else if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_GOT_IP) {
     wifiConnected = true;
     ESP_LOGI(TAG, "WiFi got IP");
+  } else if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_LOST_IP) {
+    // Can fire without a WIFI_EVENT_STA_DISCONNECTED (e.g. DHCP lease lost
+    // while still associated) - esp_wifi_connect() isn't appropriate here,
+    // just stop treating the link as usable until GOT_IP fires again.
+    wifiConnected = false;
+    ESP_LOGW(TAG, "WiFi lost IP");
   }
 }
 
@@ -389,6 +395,8 @@ void wifiStationInit() {
                                              &onWifiEvent, nullptr));
   ESP_ERROR_CHECK(esp_event_handler_register(
       IP_EVENT, IP_EVENT_STA_GOT_IP, &onWifiEvent, nullptr));
+  ESP_ERROR_CHECK(esp_event_handler_register(
+      IP_EVENT, IP_EVENT_STA_LOST_IP, &onWifiEvent, nullptr));
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_start());
