@@ -40,17 +40,23 @@ const char* TAG = "snapclient";
 
 std::atomic<bool> wifiConnected{false};
 
-// 15 slots of 4096 bytes (~61KB, ~300ms of 48kHz stereo S16 audio),
-// pre-allocated once at startup instead of per-chunk to avoid heap
+// Pre-allocated once at startup instead of per-chunk, to avoid heap
 // fragmentation under sustained ~50 allocs/frees per second.
 //
 // PcmChunkPool prefers IRAM (a pool separate from the DRAM heap
 // Opus/DSP/WiFi/HTTP draw from) but falls back to DRAM when IRAM has no
-// room - this board's IRAM is fully committed elsewhere, so this is
-// sized against DRAM headroom; sizing it larger starves those other
-// allocations.
-constexpr size_t kPcmPoolSlotCount = 15;
+// room - sized against whichever of those two is tighter on a given
+// chip, since oversizing it starves those other allocations.
+#if CONFIG_IDF_TARGET_ESP32
+// Original ESP32, no PSRAM: ~320KB total SRAM has to cover WiFi, Opus,
+// DSP and HTTP too - 4 slots (~16KB, ~80ms) instead of the PSRAM
+// board's 15.
+constexpr size_t kPcmPoolSlotCount = 4;
 constexpr size_t kPcmPoolSlotBytes = 4096;
+#else
+constexpr size_t kPcmPoolSlotCount = 15;  // ~61KB, ~300ms
+constexpr size_t kPcmPoolSlotBytes = 4096;
+#endif
 
 // Snapcast's Opus stream here always encodes 20ms frames at 48kHz -
 // 960 samples per channel. Used to size the silence placeholder written
@@ -227,6 +233,10 @@ class SnapclientTask : public bell::Task {
       }
     };
 
+    int64_t lastDropLogUs = 0;
+    size_t queueFullDrops = 0;
+    size_t poolExhaustedDrops = 0;
+
     client.onPcmChunk = [&](const std::byte* pcm, size_t len,
                             int64_t serverTimeUs) {
       if (!sync.latencyReady()) {
@@ -234,21 +244,37 @@ class SnapclientTask : public bell::Task {
       }
       std::lock_guard<std::mutex> lock(queueMutex);
       if (queue.size() >= kPcmPoolSlotCount) {
-        BELL_LOG(warn, kLogTag, "dropping pcm chunk: queue full");
-        return;
+        queueFullDrops++;
+      } else {
+        QueuedChunk item;
+        item.serverTimeUs = serverTimeUs;
+        item.pcm = pcmPool.acquire(pcm, len);
+        // Pool exhaustion queues a silent placeholder (item.pcm left
+        // empty) instead of dropping the chunk outright - a dropped
+        // chunk leaves a gap in the played frame count that the
+        // server's clock doesn't have, which is what was driving
+        // SyncEngine's runaway resyncs.
+        if (!item.pcm) {
+          poolExhaustedDrops++;
+        }
+        queue.push_back(std::move(item));
       }
 
-      QueuedChunk item;
-      item.serverTimeUs = serverTimeUs;
-      item.pcm = pcmPool.acquire(pcm, len);
-      // Pool exhaustion queues a silent placeholder (item.pcm left empty)
-      // instead of dropping the chunk outright - a dropped chunk leaves a
-      // gap in the played frame count that the server's clock doesn't
-      // have, which is what was driving SyncEngine's runaway resyncs.
-      if (!item.pcm) {
-        BELL_LOG(warn, kLogTag, "pool exhausted, queueing silence");
+      // Sustained overload logs every chunk otherwise - the blocking
+      // UART write itself then becomes part of the overload, up to
+      // starving other tasks long enough to trip the watchdog.
+      const int64_t dropLogNow = nowUs();
+      if (dropLogNow - lastDropLogUs >= 1000000) {
+        lastDropLogUs = dropLogNow;
+        if (queueFullDrops > 0 || poolExhaustedDrops > 0) {
+          BELL_LOG(warn, kLogTag,
+                   "dropped {} chunks (queue full), queued {} silent "
+                   "(pool exhausted) in the last second",
+                   queueFullDrops, poolExhaustedDrops);
+          queueFullDrops = 0;
+          poolExhaustedDrops = 0;
+        }
       }
-      queue.push_back(std::move(item));
     };
 
     BELL_LOG(info, kLogTag, "connecting to {}:{}...", config.host,
