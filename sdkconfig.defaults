@@ -11,7 +11,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Dynamic frequency scaling + automatic light sleep, so the clock can
-# drop when idle instead of sitting at max frequency always.
+# Dynamic frequency scaling, so the clock can drop when idle instead of
+# sitting at max frequency always. Not automatic light sleep - see
+# main.cpp's esp_pm_configure() call for why.
 CONFIG_PM_ENABLE=y
-CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
