@@ -149,6 +149,10 @@ const char kGeneralSettingsHtml[] = R"HTMLPAGE(<!DOCTYPE html>
 </form>
 
 <script>
+let lastAppliedHostname = null;
+let lastAppliedHost = null;
+let lastAppliedPort = null;
+
 async function load() {
   const res = await fetch('/api/settings');
   const state = await res.json();
@@ -158,6 +162,9 @@ async function load() {
   document.getElementById('logEnabled').checked = state.logging.enabled;
   document.getElementById('logHost').value = state.logging.udpHost;
   document.getElementById('logPort').value = state.logging.udpPort;
+  lastAppliedHostname = state.device.hostname;
+  lastAppliedHost = state.server.host;
+  lastAppliedPort = state.server.port;
 }
 
 document.getElementById('detectBtn').addEventListener('click', async () => {
@@ -201,6 +208,11 @@ document.getElementById('form').addEventListener('submit', async (e) => {
       udpPort: parseInt(document.getElementById('logPort').value, 10)
     }
   };
+  const needsRestart =
+      payload.device.hostname !== lastAppliedHostname ||
+      payload.server.host !== lastAppliedHost ||
+      payload.server.port !== lastAppliedPort;
+
   const statusEl = document.getElementById('status');
   try {
     const res = await fetch('/api/settings', { method: 'POST', body: JSON.stringify(payload) });
@@ -210,6 +222,16 @@ document.getElementById('form').addEventListener('submit', async (e) => {
       statusEl.className = 'error';
       return;
     }
+    if (needsRestart) {
+      statusEl.textContent = 'Saved. Restarting to apply new hostname/server settings...';
+      statusEl.className = 'success';
+      // The device reboots before this can resolve either way.
+      fetch('/api/restart', { method: 'POST' }).catch(() => {});
+      return;
+    }
+    lastAppliedHostname = payload.device.hostname;
+    lastAppliedHost = payload.server.host;
+    lastAppliedPort = payload.server.port;
     statusEl.textContent = 'Saved.';
     statusEl.className = 'success';
   } catch (err) {
