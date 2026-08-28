@@ -16,6 +16,11 @@
 namespace snapclient {
 
 namespace {
+// Defense against a corrupt/malicious base->size (raw wire uint32_t, up
+// to 4GB) driving an unbounded vector resize - real messages (encoded or
+// raw PCM chunks, JSON server settings) never approach this.
+constexpr uint32_t kMaxMessagePayloadBytes = 65536;
+
 int64_t nowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
@@ -155,6 +160,11 @@ bool SnapcastClient::readAndDispatchOne() {
   auto base = BaseMessage::parse(headerBuf.data(), headerBuf.size());
   if (!base) {
     BELL_LOG(warn, LOG_TAG, "malformed message header");
+    return false;
+  }
+  if (base->size > kMaxMessagePayloadBytes) {
+    BELL_LOG(warn, LOG_TAG, "message payload too large: {} bytes",
+             base->size);
     return false;
   }
   const int64_t receivedAt = nowUs();
