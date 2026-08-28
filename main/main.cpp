@@ -528,6 +528,11 @@ void onWifiEvent(void* /*arg*/, esp_event_base_t eventBase, int32_t eventId,
   } else if (eventBase == WIFI_EVENT &&
             eventId == WIFI_EVENT_STA_DISCONNECTED) {
     wifiConnected = false;
+    // ImprovWifi::connectWifi() drives reconnection itself while
+    // provisioning - step aside instead of racing it.
+    if (snapclient::ImprovWifi::isProvisioning()) {
+      return;
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_wifi_connect();
   } else if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_GOT_IP) {

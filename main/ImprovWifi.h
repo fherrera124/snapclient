@@ -26,12 +26,15 @@ class ImprovWifi : public bell::Task {
   // Fired after a WIFI_SETTINGS command successfully connects.
   std::function<void()> onProvisioned;
 
+  // True while connectWifi() is running - main.cpp's disconnect handler
+  // checks this to avoid racing connectWifi()'s own reconnect sequence.
+  static bool isProvisioning();
+
  protected:
   void taskLoop() override;
 
  private:
   enum class State : uint8_t {
-    Stopped = 0x00,
     AwaitingAuthorization = 0x01,
     Authorized = 0x02,
     Provisioning = 0x03,
@@ -87,6 +90,8 @@ class ImprovWifi : public bell::Task {
   std::atomic<bool> connected_{false};
   static void onWifiEvent(void* arg, esp_event_base_t base, int32_t id,
                           void* data);
+
+  static std::atomic<bool> provisioningInProgress_;
 };
 
 }  // namespace snapclient

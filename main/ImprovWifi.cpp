@@ -1,9 +1,11 @@
 #include "ImprovWifi.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "driver/uart.h"
 #include "driver/usb_serial_jtag.h"
+#include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -14,7 +16,14 @@ namespace snapclient {
 
 namespace {
 constexpr char kMagic[6] = {'I', 'M', 'P', 'R', 'O', 'V'};
+constexpr const char* kLogTag = "ImprovWifi";
 }  // namespace
+
+std::atomic<bool> ImprovWifi::provisioningInProgress_{false};
+
+bool ImprovWifi::isProvisioning() {
+  return provisioningInProgress_;
+}
 
 ImprovWifi::ImprovWifi()
     : bell::Task("improv_wifi", 8 * 1024, /*espPriority=*/4,
@@ -44,12 +53,16 @@ ImprovWifi::~ImprovWifi() {
 }
 
 void ImprovWifi::onWifiEvent(void* arg, esp_event_base_t base, int32_t id,
-                             void* /*data*/) {
+                             void* data) {
   auto* self = static_cast<ImprovWifi*>(arg);
   if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     self->connected_ = true;
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
     self->connected_ = false;
+    // Driver connect-attempt tracing is compiled out at this log level;
+    // this reason code is the only visible signal for why it failed.
+    auto* disconnected = static_cast<wifi_event_sta_disconnected_t*>(data);
+    ESP_LOGW(kLogTag, "STA disconnected, reason=%d", disconnected->reason);
   }
 }
 
@@ -171,8 +184,10 @@ void ImprovWifi::handleCommand(Command cmd, const uint8_t* data,
           onProvisioned();
         }
       } else {
-        sendState(State::Stopped);
+        // Stopped means "provisioning unavailable" in the Improv spec, not
+        // "attempt failed" - stay Authorized so the client can retry.
         sendError(ErrorCode::UnableToConnect);
+        sendState(State::Authorized);
       }
       break;
     }
@@ -198,23 +213,42 @@ bool ImprovWifi::connectWifi(const std::string& ssid,
       password.size() >= sizeof(config.sta.password)) {
     return false;
   }
-  // esp_wifi_set_config() rejects the call outright ("sta is connecting,
-  // cannot set config") if the station is mid-connection-attempt with the
-  // previous credentials - disconnect first to force it out of that state
-  // before touching the config.
+
+  // Held for the whole call so main.cpp's disconnect handler steps aside
+  // instead of racing the sequence below.
+  provisioningInProgress_ = true;
+  struct ScopeGuard {
+    ~ScopeGuard() { provisioningInProgress_ = false; }
+  } guard;
+
+  // esp_wifi_disconnect() only posts the disconnect and returns immediately,
+  // so set_config() can still see ESP_ERR_WIFI_STATE ("still connecting")
+  // for a few ms after - retry instead of failing on the first attempt.
   connected_ = false;
   esp_wifi_disconnect();
 
-  esp_wifi_get_config(WIFI_IF_STA, &config);
-  std::memset(config.sta.ssid, 0, sizeof(config.sta.ssid));
-  std::memset(config.sta.password, 0, sizeof(config.sta.password));
+  // Not seeded from esp_wifi_get_config(): it returns threshold.authmode
+  // and bssid still pinned to the previously-associated AP, which would
+  // silently restrict scanning to a network that's no longer wanted.
   std::memcpy(config.sta.ssid, ssid.data(), ssid.size());
   std::memcpy(config.sta.password, password.data(), password.size());
-  if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK) {
+
+  esp_err_t err = ESP_FAIL;
+  for (int attempt = 0; attempt < 10; attempt++) {
+    err = esp_wifi_set_config(WIFI_IF_STA, &config);
+    if (err != ESP_ERR_WIFI_STATE) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  if (err != ESP_OK) {
+    ESP_LOGW(kLogTag, "esp_wifi_set_config failed: %s", esp_err_to_name(err));
     return false;
   }
 
-  if (esp_wifi_connect() != ESP_OK) {
+  err = esp_wifi_connect();
+  if (err != ESP_OK) {
+    ESP_LOGW(kLogTag, "esp_wifi_connect failed: %s", esp_err_to_name(err));
     return false;
   }
 
@@ -224,6 +258,7 @@ bool ImprovWifi::connectWifi(const std::string& ssid,
     }
     vTaskDelay(pdMS_TO_TICKS(500));
   }
+  ESP_LOGW(kLogTag, "timed out waiting to connect to \"%s\"", ssid.c_str());
   return false;
 }
 
@@ -318,12 +353,16 @@ void ImprovWifi::writeFrame(FrameType type,
 }
 
 void ImprovWifi::writeBytes(const uint8_t* data, size_t len) {
+  // ESP_LOGx()/BELL_LOG() share this UART via stdout; this lock keeps a
+  // concurrent log line from splicing into the frame mid-write.
+  flockfile(stdout);
 #if CONFIG_ESP_CONSOLE_UART_DEFAULT || CONFIG_ESP_CONSOLE_UART_CUSTOM
   uart_write_bytes(static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM),
                    reinterpret_cast<const char*>(data), len);
 #elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
   usb_serial_jtag_write_bytes(data, len, portMAX_DELAY);
 #endif
+  funlockfile(stdout);
 }
 
 }  // namespace snapclient
