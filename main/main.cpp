@@ -27,7 +27,7 @@
 #include "AudioSinkI2S.h"
 #include "ImprovWifi.h"
 #include "NvsSettingsStore.h"
-#include "PcmChunkPool.h"
+#include "snapclient/ChunkBuffer.h"
 #include "snapclient/ControlServer.h"
 #include "snapclient/ControlSettings.h"
 #include "snapclient/Core.h"
@@ -51,48 +51,11 @@ constexpr size_t kFramesPerChunk = 960;
 constexpr size_t kBytesPerFrame = 2 * sizeof(int16_t);  // stereo S16
 constexpr size_t kPcmChunkBytes = kFramesPerChunk * kBytesPerFrame;
 
-// Pre-allocated instead of per-chunk, to avoid heap fragmentation under
-// sustained ~50 allocs/frees per second. PcmChunkPool prefers IRAM (a
-// pool separate from the DRAM heap Opus/DSP/WiFi/HTTP draw from) but
-// falls back to DRAM when IRAM has no room.
-//
-// Slots hold chunks as *received*, not decoded. For Opus, that means a
-// raw encoded packet - capped at 1275 bytes by RFC 6716 for a 20ms frame
-// regardless of bitrate, far smaller than the ~3.8KB its decoded PCM
-// takes up - decodeOpus() only runs right before playback (see the
-// consumer loop below), so the bulk of however many chunks the server's
-// bufferMs asks for sits compactly encoded. Pcm has no such compression
-// to exploit, so its slot must fit a whole raw chunk (kPcmChunkBytes) -
-// sized separately below, and the pool is reconstructed for whichever
-// codec is actually negotiated (see ensurePoolForCodec in runTask()),
-// since committing to one slot size at compile time would either waste
-// most of Opus's real buffering headroom or make Pcm permanently fall
-// back to the pool-exhausted silence path.
-constexpr size_t kOpusPoolSlotBytes = 1400;  // RFC 6716 max (1275) + margin
-#if CONFIG_IDF_TARGET_ESP32
-// Original ESP32, no PSRAM: ~320KB total SRAM has to cover WiFi, Opus,
-// DSP and HTTP too - watch freeHeap at startup if raising this further,
-// Opus decoder setup can fail under memory pressure on this board.
-constexpr size_t kOpusPoolSlotCount = 32;  // ~44KB, ~640ms
-// Same ~42KB this pool always held for Pcm, before tonight's Opus-only
-// slot shrink - Pcm was never affected by that, so it keeps its
-// original capacity rather than gaining or losing anything.
-constexpr size_t kPcmPoolSlotCount = 11;  // ~220ms
-#else
-// Same ~44KB/~640ms Opus budget as the ESP32 branch above, scaled up -
-// not independently tuned against this (PSRAM) board's real headroom.
-constexpr size_t kOpusPoolSlotCount = 44;  // ~880ms
-constexpr size_t kPcmPoolSlotCount = 15;  // ~300ms
-#endif
-
-// Bounds the network-to-playback queue independently of the pool sizes -
-// those are sized against the memory-tight pool of real payload buffers,
-// but a queued item without one still carries useful timing (it falls
-// back to the pool-exhausted silence path in onAudioChunk below), so
-// starving the queue itself to match the pool's memory budget only turns
-// bursts into unaccounted drops instead of accounted silence. Set above
-// what the Opus pool (kOpusPoolSlotCount, the common case) can back with
-// real data, not tied to any one server-configured bufferMs.
+// Bounds the network-to-playback queue. A chunk acquireChunkBuffer()
+// couldn't get memory for still carries useful timing (it falls back to
+// the accounted-silence path in onAudioChunk below), so this isn't tied
+// to any particular memory budget - just high enough to absorb ordinary
+// network jitter without starving the queue into unaccounted drops.
 constexpr size_t kQueueCapacity = 40;
 
 int64_t nowUs() {
@@ -106,7 +69,7 @@ struct QueuedChunk {
   snapclient::Codec codec = snapclient::Codec::None;
   // Encoded (Opus) or raw (Pcm codec) payload, exactly as received -
   // decodeOpus() runs later, in the consumer loop, not here.
-  snapclient::PcmChunkPool::PooledBuffer payload;
+  snapclient::ChunkBuffer payload;
 };
 
 }  // namespace
@@ -199,35 +162,6 @@ class SnapclientTask : public bell::Task {
         static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MUTE_GPIO);
     snapclient::AudioSinkI2S i2sSink(sinkConfig);
 
-    // Reconstructed by ensurePoolForCodec() below for whichever codec is
-    // actually negotiated - null only before the first one ever is.
-    std::unique_ptr<snapclient::PcmChunkPool> pcmPool;
-    snapclient::Codec pcmPoolCodec = snapclient::Codec::None;
-    auto ensurePoolForCodec = [&](snapclient::Codec codec) {
-      if (codec == pcmPoolCodec) {
-        return;
-      }
-      pcmPoolCodec = codec;
-      // release(), not reset(): a PooledBuffer the consumer thread
-      // already checked out from the old pool before this runs (not
-      // ruled out - this fires on the network thread, independently of
-      // the consumer's own loop timing) still needs its original pool
-      // object to exist when it releases back. Actual codec transitions
-      // are rare - a reconnect with the same codec never reaches here,
-      // since pcmPoolCodec already matches - so deliberately leaking one
-      // pool's worth of storage on the rare transition that does happen
-      // beats synchronizing a safe hand-off between threads for
-      // something that may never occur in a stable deployment.
-      (void)pcmPool.release();
-      if (codec == snapclient::Codec::Pcm) {
-        pcmPool = std::make_unique<snapclient::PcmChunkPool>(kPcmPoolSlotCount,
-                                                             kPcmChunkBytes);
-      } else {
-        pcmPool = std::make_unique<snapclient::PcmChunkPool>(
-            kOpusPoolSlotCount, kOpusPoolSlotBytes);
-      }
-    };
-    ensurePoolForCodec(snapclient::Codec::Opus);
     std::mutex queueMutex;
     std::deque<QueuedChunk> queue;
     // Lets the empty-queue wait below react as soon as onAudioChunk pushes
@@ -282,7 +216,7 @@ class SnapclientTask : public bell::Task {
       }
     };
 
-    client.onCodecReady = [&](snapclient::Codec codec,
+    client.onCodecReady = [&](snapclient::Codec /*codec*/,
                               const bell::audio::Format& fmt) {
       sampleRate = fmt.getSampleRate();
       i2sSink.configure(fmt.getSampleRateValue());
@@ -295,7 +229,6 @@ class SnapclientTask : public bell::Task {
         std::lock_guard<std::mutex> lock(queueMutex);
         queue.clear();
       }
-      ensurePoolForCodec(codec);
       BELL_LOG(info, kLogTag, "codec ready: {} Hz, {} ch",
                fmt.getSampleRateValue(), fmt.getNumChannels());
     };
@@ -326,12 +259,12 @@ class SnapclientTask : public bell::Task {
         QueuedChunk item;
         item.serverTimeUs = serverTimeUs;
         item.codec = codec;
-        // Pool exhaustion queues a silent placeholder (item.payload left
-        // empty) instead of dropping the chunk outright - a dropped
+        // An allocation failure queues a silent placeholder (item.payload
+        // left empty) instead of dropping the chunk outright - a dropped
         // chunk leaves a gap in the played frame count that the
         // server's clock doesn't have. See silencePlayed below for how
         // often this actually results in audible silence.
-        item.payload = pcmPool->acquire(payload, len);
+        item.payload = snapclient::acquireChunkBuffer(payload, len);
         // chunkAvailable is an uncapped counting semaphore; the consumer
         // only take()s it when idle, not once per dequeue - giving on
         // every push would grow the count unbounded, and take() then
@@ -393,8 +326,12 @@ class SnapclientTask : public bell::Task {
       const int64_t logNow = nowUs();
       if (logNow - lastQueueLogUs >= 1000000) {
         lastQueueLogUs = logNow;
-        BELL_LOG(info, kLogTag, "queue depth={} freeHeap={}", queueDepth,
-                 esp_get_free_heap_size());
+        // A growing gap between freeHeap and largestFreeBlock over time
+        // is the fragmentation signal to watch for.
+        BELL_LOG(info, kLogTag,
+                 "queue depth={} freeHeap={} largestFreeBlock={}", queueDepth,
+                 esp_get_free_heap_size(),
+                 snapclient::chunkHeapLargestFreeBlockBytes());
       }
 
       // Stack sizes below (SnapclientTask, SnapcastClient) are both fixed

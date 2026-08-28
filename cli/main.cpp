@@ -15,6 +15,7 @@
 
 #include <tcb/span.hpp>
 
+#include "snapclient/ChunkBuffer.h"
 #include "snapclient/ControlServer.h"
 #include "snapclient/ControlSettings.h"
 #include "snapclient/Core.h"
@@ -52,7 +53,7 @@ struct QueuedChunk {
   snapclient::Codec codec = snapclient::Codec::None;
   // Encoded (Opus) or raw (Pcm codec) payload, exactly as received -
   // decoding happens later, in the consumer loop below.
-  std::vector<std::byte> payload;
+  snapclient::ChunkBuffer payload;
 };
 
 // Matches main.cpp's (ESP32 target) kFramesPerChunk/kBytesPerFrame
@@ -217,7 +218,7 @@ int runSnapcastTest(const std::string& host, uint16_t port,
     QueuedChunk item;
     item.serverTimeUs = serverTimeUs;
     item.codec = codec;
-    item.payload.assign(payload, payload + len);
+    item.payload = snapclient::acquireChunkBuffer(payload, len);
 
     std::lock_guard<std::mutex> lock(queueMutex);
     queue.push_back(std::move(item));
