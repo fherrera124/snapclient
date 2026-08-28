@@ -435,9 +435,7 @@ class SnapclientTask : public bell::Task {
 
           // Realizes frameAdjustment on the actual I2S bytes: negative
           // drops that many frames from this write (catch up), positive
-          // writes them again after (slow down). Magnitude scales with
-          // how far off sync is, not fixed to one frame - see
-          // SyncEngine.cpp.
+          // writes them again after (slow down) - see SyncEngine.cpp.
           const size_t adjustFrames =
               static_cast<size_t>(result.frameAdjustment < 0
                                       ? -result.frameAdjustment
