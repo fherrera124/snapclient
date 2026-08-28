@@ -106,22 +106,16 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
 }
 
 uint32_t AudioSinkI2S::outputBufferUs() const {
-  // Audio handed to i2s_channel_write() sits in this many frames of DMA
-  // ring before actually reaching the DAC - SyncEngine's played-frame
-  // count needs this added on top of the server-configured DAC latency,
-  // or it targets a point in time earlier than what's really playing.
-  //
-  // (kDmaDescNum - 1) full descriptors plus however far write() has
-  // landed into the current one, not kDmaDescNum flat - a chunk
-  // (kFramesPerChunk) is smaller than one descriptor (kDmaFrameNum), so a
-  // single write() essentially never completes filling it, and assuming a
-  // full ring overstates the real latency.
+  // The only buffered-but-undrained amount write() pacing to real time
+  // (see SyncEngine's WaitMore) actually guarantees - not kDmaDescNum's
+  // full ring, which is DMA channel capacity (jitter cushion), not
+  // occupancy. Assuming extra descriptors sit full only holds for a
+  // writer racing to fill the ring, which this one deliberately isn't.
   if (currentSampleRate_ == 0) {
     return 0;
   }
-  return static_cast<uint32_t>(
-      (uint64_t{kDmaDescNum - 1} * kDmaFrameNum + framesIntoCurrentDescriptor_) *
-      1000000 / currentSampleRate_);
+  return static_cast<uint32_t>(uint64_t{framesIntoCurrentDescriptor_} *
+                               1000000 / currentSampleRate_);
 }
 
 void AudioSinkI2S::primeSilence() {

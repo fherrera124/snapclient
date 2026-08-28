@@ -100,7 +100,9 @@ class SnapclientTask : public bell::Task {
     snapclient::DspProcessor dsp;
     bell::audio::SampleRate sampleRate = bell::audio::SampleRate::SR_44100HZ;
     int32_t bufferMs = 0;
-    int32_t serverLatencyMs = 0;
+    // Snapcast's per-client "latency" setting, which nothing on this end
+    // can measure directly - see outputBufferUs() for the dynamic part.
+    int32_t dacFixedLatencyMs = 0;
     // Tracks what SyncEngine was last told, so a ServerSettings message
     // that only changed volume/mute (bundled together in the same message
     // by the protocol) doesn't also force a resync - sync.onSettingsChanged
@@ -197,7 +199,7 @@ class SnapclientTask : public bell::Task {
 
     client.onServerSettings = [&](const snapclient::ServerSettings& s) {
       bufferMs = s.bufferMs;
-      serverLatencyMs = s.latencyMs;
+      dacFixedLatencyMs = s.latencyMs;
       if (bufferMs != lastSyncBufferMs) {
         lastSyncBufferMs = bufferMs;
         sync.onSettingsChanged(bufferMs, static_cast<uint32_t>(sampleRate));
@@ -413,7 +415,7 @@ class SnapclientTask : public bell::Task {
       // reflects where the previous write() actually landed in the DMA
       // ring, not a fixed assumption about it.
       const int32_t dacLatencyUs =
-          static_cast<int32_t>(serverLatencyMs) * 1000 +
+          static_cast<int32_t>(dacFixedLatencyMs) * 1000 +
           static_cast<int32_t>(i2sSink.outputBufferUs());
 
       for (;;) {
