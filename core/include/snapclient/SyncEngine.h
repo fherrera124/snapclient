@@ -55,22 +55,19 @@ class SyncEngine {
 
  private:
   static constexpr uint32_t kLatencyFilterFull = 29;
-  // Wide enough to tolerate decodeOpus()+DSP processing running inline in
-  // this per-chunk path before evaluate() samples nowUs() - that adds a
-  // few ms of latency on top of ordinary network/scheduling jitter.
-  static constexpr int64_t kHardResyncThresholdUs = 20000;
+  static constexpr int64_t kHardResyncThresholdUs = 2000;
   static constexpr int64_t kShortOffsetUs = 128;
   static constexpr int64_t kMiniOffsetUs = 64;
   // A chunk within this window of its target start time is treated as
   // on-time. Asymmetric on purpose: an early chunk just waits and
   // rechecks itself (WaitMore) at the exact remaining delay, but a late
   // one is dropped with no retry - a small systematic (not jittery)
-  // lateness bias would otherwise reject every chunk forever. The
-  // late-side slack must be at least kHardResyncThresholdUs, or a bias
-  // steady playback already tolerates becomes unrecoverable right after a
-  // resync.
+  // lateness bias would otherwise reject every chunk forever.
   static constexpr int64_t kInitialSyncEarlyToleranceUs = 2000;
-  static constexpr int64_t kInitialSyncLateToleranceUs = kHardResyncThresholdUs;
+  // Must stay wide enough to tolerate decodeOpus()+DSP processing running
+  // inline in this per-chunk path before evaluate() samples nowUs(), on
+  // top of ordinary network/scheduling jitter.
+  static constexpr int64_t kInitialSyncLateToleranceUs = 20000;
 
   // -1 catches up, +1 slows down, 0 if the three signals disagree or the
   // medians aren't full. Fixed magnitude, not scaled to the drift size -
