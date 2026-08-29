@@ -2,9 +2,11 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 
 #include <bell/audio/Common.h>
 #include <bell/dsp/Engine.h>
+#include <bell/dsp/GainTransform.h>
 
 namespace snapclient {
 
@@ -36,6 +38,9 @@ class DspProcessor {
   DspFlow activeFlow = DspFlow::Stereo;
   std::array<DspFilterParams, 4> flowParams{};
   float volume = 1.0f;
+  // Owned across rebuilds so setVolume() can reconfigure it in place
+  // without rebuilding the pipeline.
+  std::shared_ptr<bell::dsp::GainTransform> gainTransform;
 };
 
 }  // namespace snapclient

@@ -48,7 +48,11 @@ void DspProcessor::setParams(DspFlow flow, const DspFilterParams& params) {
 
 void DspProcessor::setVolume(float volume) {
   this->volume = volume;
-  rebuildPipeline();
+  // GainTransform::configure() is thread-safe on its own - no need to
+  // touch the pipeline.
+  if (gainTransform) {
+    gainTransform->configure(20.0f * log10f(volume));
+  }
 }
 
 void DspProcessor::rebuildPipeline() {
@@ -91,10 +95,10 @@ void DspProcessor::rebuildPipeline() {
       break;
   }
 
-  auto gain = std::make_shared<GainTransform>();
-  gain->setChannels({0, 1});
-  gain->configure(20.0f * log10f(volume));
-  pipeline->addTransform(gain);
+  gainTransform = std::make_shared<GainTransform>();
+  gainTransform->setChannels({0, 1});
+  gainTransform->configure(20.0f * log10f(volume));
+  pipeline->addTransform(gainTransform);
 
   engine.applyPipeline(pipeline);
 }
