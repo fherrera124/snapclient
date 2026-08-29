@@ -16,6 +16,10 @@ struct SyncResult {
   // -1 = skip one frame (catch up), 0 = none, +1 = duplicate one frame (slow down).
   int frameAdjustment = 0;
   bool hardResync = false;
+  // Meaningful only when decision == Play, past the first chunk of a
+  // resync. Set to evaluate()'s own values so callers don't recompute them.
+  int64_t ageUs = 0;
+  int64_t diffToServerUs = 0;
 };
 
 // Decides when a chunk should play and by how much to nudge playback to

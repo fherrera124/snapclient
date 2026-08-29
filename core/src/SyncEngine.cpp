@@ -107,7 +107,7 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
         shortMedian_.median(), miniMedian_.median(), age);
   }
 
-  return {PlayDecision::Play, 0, frameAdjustment, false};
+  return {PlayDecision::Play, 0, frameAdjustment, false, age, diffToServer};
 }
 
 void SyncEngine::onFramesWritten(size_t frameCount) {

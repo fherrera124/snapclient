@@ -91,6 +91,17 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
     teardownChannel();
     return;
   }
+
+  // Must be registered before i2s_channel_enable() - the driver only
+  // accepts callback registration while the channel is REGISTERED/READY.
+  i2s_event_callbacks_t callbacks = {};
+  callbacks.on_send_q_ovf = &AudioSinkI2S::onSendQueueOverflow;
+  err = i2s_channel_register_event_callback(txChan_, &callbacks, this);
+  if (err != ESP_OK) {
+    BELL_LOG(error, LOG_TAG, "i2s_channel_register_event_callback failed: {}",
+             static_cast<int>(err));
+  }
+
   err = i2s_channel_enable(txChan_);
   if (err != ESP_OK) {
     BELL_LOG(error, LOG_TAG, "i2s_channel_enable failed: {}",
@@ -159,6 +170,23 @@ void AudioSinkI2S::setMuted(bool muted) {
     return;
   }
   gpio_set_level(config_.mutePin, muted ? 0 : 1);
+}
+
+uint32_t AudioSinkI2S::sendQueueOverflowCount() const {
+  return sendQueueOverflowCount_.load(std::memory_order_relaxed);
+}
+
+uint32_t AudioSinkI2S::underrunCompensationFrames() const {
+  return sendQueueOverflowCount_.load(std::memory_order_relaxed) *
+         static_cast<uint32_t>(kDmaFrameNum);
+}
+
+bool AudioSinkI2S::onSendQueueOverflow(i2s_chan_handle_t /*handle*/,
+                                       i2s_event_data_t* /*event*/,
+                                       void* userCtx) {
+  static_cast<AudioSinkI2S*>(userCtx)
+      ->sendQueueOverflowCount_.fetch_add(1, std::memory_order_relaxed);
+  return false;
 }
 
 }  // namespace snapclient

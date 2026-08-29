@@ -172,7 +172,10 @@ class SnapclientTask : public bell::Task {
 
     size_t chunksPlayed = 0;
     size_t chunksDropped = 0;
-    size_t corrections = 0;
+    // Split by direction: a real clock-rate bias grows one side much
+    // faster than the other, unlike threshold noise on both.
+    size_t correctionsSkip = 0;
+    size_t correctionsDuplicate = 0;
     size_t silencePlayed = 0;
 
     snapclient::SnapcastClient::Config config;
@@ -305,12 +308,24 @@ class SnapclientTask : public bell::Task {
     std::vector<std::byte> decodeBuf(kPcmChunkBytes);
     int64_t lastQueueLogUs = 0;
     int64_t lastTimingLogUs = 0;
+    int64_t lastPlayedLogUs = 0;
     int64_t lastDropYieldUs = 0;
     int64_t lastStackLogUs = 0;
     int64_t lastSilenceLogUs = 0;
+    uint32_t lastUnderrunCompensationFrames = 0;
     int64_t dspSumUs = 0, dspMaxUs = 0;
     int64_t i2sSumUs = 0, i2sMaxUs = 0;
     size_t dspSamples = 0, i2sSamples = 0;
+
+    // Shared by every background log below except stack headroom (its own
+    // 10s) - a multi-hour soak needs a log short enough to read back
+    // afterwards, not several fresh lines every second.
+    constexpr int64_t kBackgroundLogIntervalUs = 60'000'000;  // 60s
+    int64_t lastResyncAtUs = nowUs();
+    size_t lastCorrectionsSkipLogged = 0;
+    size_t lastCorrectionsDuplicateLogged = 0;
+    int64_t lastAgeUs = 0;
+    int64_t lastDiffToServerUs = 0;
     while (true) {
       QueuedChunk item;
       size_t queueDepth = 0;
@@ -326,7 +341,7 @@ class SnapclientTask : public bell::Task {
       }
 
       const int64_t logNow = nowUs();
-      if (logNow - lastQueueLogUs >= 1000000) {
+      if (logNow - lastQueueLogUs >= kBackgroundLogIntervalUs) {
         lastQueueLogUs = logNow;
         // A growing gap between freeHeap and largestFreeBlock over time
         // is the fragmentation signal to watch for.
@@ -418,6 +433,11 @@ class SnapclientTask : public bell::Task {
           static_cast<int32_t>(dacFixedLatencyMs) * 1000 +
           static_cast<int32_t>(i2sSink.outputBufferUs());
 
+      // Captured once before the retry loop below, not per-iteration:
+      // WaitMore re-evaluates the same not-yet-playing chunk without ever
+      // flipping playing_, so isPlaying() can't change mid-loop.
+      const bool wasPlayingBeforeEval = sync.isPlaying();
+
       for (;;) {
         auto result = sync.evaluate(item.serverTimeUs, nowUs(), queueDepth,
                                     dacLatencyUs);
@@ -454,10 +474,33 @@ class SnapclientTask : public bell::Task {
           i2sMaxUs = std::max(i2sMaxUs, i2sUs);
           i2sSamples++;
 
-          if (result.frameAdjustment != 0) {
-            corrections++;
+          if (result.frameAdjustment < 0) {
+            correctionsSkip++;
+          } else if (result.frameAdjustment > 0) {
+            correctionsDuplicate++;
           }
           sync.onFramesWritten(frames + result.frameAdjustment);
+
+          // Underruns advance the DAC's clock without a matching write() -
+          // feed that into SyncEngine too. Only while already playing: a
+          // resync's own search leaves the DMA idle on purpose, that's not
+          // lost time.
+          const uint32_t underrunFrames = i2sSink.underrunCompensationFrames();
+          if (wasPlayingBeforeEval) {
+            const uint32_t underrunDelta =
+                underrunFrames - lastUnderrunCompensationFrames;
+            if (underrunDelta > 0) {
+              sync.onFramesWritten(underrunDelta);
+            }
+          }
+          lastUnderrunCompensationFrames = underrunFrames;
+
+          // shortMedian_ isn't full on the very first chunk(s) after a
+          // resync, so evaluate() reports ageUs=0/diffToServerUs=0 then -
+          // harmless here since the drift log below only cares about the
+          // steady-state trend over minutes/hours, not that transient.
+          lastAgeUs = result.ageUs;
+          lastDiffToServerUs = result.diffToServerUs;
         } else {
           chunksDropped++;
           // Unlike Play (blocks on I2S write) or WaitMore (sleeps), this
@@ -489,8 +532,15 @@ class SnapclientTask : public bell::Task {
         break;
       }
 
+      // playing_ went false -> true: evaluate() just reset
+      // playbackStartTimeUs_/samplesWritten_ (see SyncEngine.cpp), from a
+      // hard resync or a fresh connection.
+      if (!wasPlayingBeforeEval && sync.isPlaying()) {
+        lastResyncAtUs = nowUs();
+      }
+
       const int64_t timingLogNow = nowUs();
-      if (timingLogNow - lastTimingLogUs >= 1000000) {
+      if (timingLogNow - lastTimingLogUs >= kBackgroundLogIntervalUs) {
         lastTimingLogUs = timingLogNow;
         BELL_LOG(info, kLogTag,
                  "loop timing: dspAvg={} dspMax={} n={} | i2sAvg={} "
@@ -506,10 +556,24 @@ class SnapclientTask : public bell::Task {
         i2sSamples = 0;
       }
 
-      if ((chunksPlayed + chunksDropped) % 50 == 0) {
+      if (timingLogNow - lastPlayedLogUs >= kBackgroundLogIntervalUs) {
+        lastPlayedLogUs = timingLogNow;
+        // skip/dup are deltas since the last log, not running totals -
+        // those lose resolution over a multi-hour soak.
+        const int64_t deltaSkip =
+            static_cast<int64_t>(correctionsSkip - lastCorrectionsSkipLogged);
+        const int64_t deltaDuplicate = static_cast<int64_t>(
+            correctionsDuplicate - lastCorrectionsDuplicateLogged);
+        lastCorrectionsSkipLogged = correctionsSkip;
+        lastCorrectionsDuplicateLogged = correctionsDuplicate;
         BELL_LOG(info, kLogTag,
-                 "played={} dropped={} corrections={} queued={}",
-                 chunksPlayed, chunksDropped, corrections, queueDepth - 1);
+                 "played={} dropped={} queued={} i2sSendQOverflow={} "
+                 "ageUs={} diffToServerUs={} netCorrection={} (skip={} "
+                 "dup={}) playingForS={}",
+                 chunksPlayed, chunksDropped, queueDepth - 1,
+                 i2sSink.sendQueueOverflowCount(), lastAgeUs,
+                 lastDiffToServerUs, deltaSkip - deltaDuplicate, deltaSkip,
+                 deltaDuplicate, (timingLogNow - lastResyncAtUs) / 1000000);
       }
     }
   }
