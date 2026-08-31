@@ -13,7 +13,8 @@ enum class PlayDecision { WaitMore, DropLate, Play };
 struct SyncResult {
   PlayDecision decision = PlayDecision::WaitMore;
   int64_t waitUs = 0;
-  // -1 = skip one frame (catch up), 0 = none, +1 = duplicate one frame (slow down).
+  // Negative skips |frameAdjustment| frames (catch up), positive duplicates
+  // that many (slow down), 0 = none. Magnitude set by scaleFrameAdjustment().
   int frameAdjustment = 0;
   bool hardResync = false;
   // Meaningful only when decision == Play, past the first chunk of a
@@ -27,7 +28,9 @@ struct SyncResult {
 // the actual audio output and reports back how many frames it wrote.
 class SyncEngine {
  public:
-  SyncEngine();
+  // Ceiling on queueDepth ever passed to evaluate() - keeps
+  // scaleFrameAdjustment()'s queue thresholds within what's reachable.
+  explicit SyncEngine(size_t queueCapacity);
 
   void onSettingsChanged(int32_t bufferMs, uint32_t sampleRate);
 
@@ -74,15 +77,22 @@ class SyncEngine {
   static constexpr int64_t kInitialSyncLateToleranceUs = 20000;
 
   // -1 catches up, +1 slows down, 0 if the three signals disagree or the
-  // medians aren't full. Fixed magnitude, not scaled to the drift size -
-  // large drift is handled by the hard-resync threshold above instead.
+  // medians aren't full. Fixed magnitude - see scaleFrameAdjustment().
   int steadyStateFrameAdjustment(int64_t shortM, int64_t miniM,
                                  int64_t age) const;
+
+  // Scales steadyStateFrameAdjustment()'s fixed ±1 by drift size, and
+  // separately forces a drain when queueDepth grows even if age sees
+  // nothing wrong. The two signals only escalate each other, never
+  // shrink one another.
+  int scaleFrameAdjustment(int frameAdjustment, int64_t age,
+                           size_t queueDepth) const;
 
   TimeFilter timeFilter_;
   SlidingMedian<int64_t> shortMedian_;
   SlidingMedian<int64_t> miniMedian_;
 
+  const size_t queueCapacity_;
   int32_t bufferMs_ = 0;
   uint32_t sampleRate_ = 44100;
 

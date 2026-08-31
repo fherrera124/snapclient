@@ -1,6 +1,8 @@
 #include "snapclient/SyncEngine.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #include <bell/Logger.h>
 
@@ -10,10 +12,11 @@ namespace {
 const char* kLogTag = "SyncEngine";
 }  // namespace
 
-SyncEngine::SyncEngine()
+SyncEngine::SyncEngine(size_t queueCapacity)
     : timeFilter_(0.01, 0.0, 1.001, 0.75, 100, 2.0),
       shortMedian_(99),
-      miniMedian_(19) {}
+      miniMedian_(19),
+      queueCapacity_(queueCapacity) {}
 
 void SyncEngine::onSettingsChanged(int32_t bufferMs, uint32_t sampleRate) {
   bufferMs_ = bufferMs;
@@ -107,6 +110,7 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
     frameAdjustment = steadyStateFrameAdjustment(
         shortMedian_.median(), miniMedian_.median(), age);
   }
+  frameAdjustment = scaleFrameAdjustment(frameAdjustment, age, queueDepth);
 
   return {PlayDecision::Play, 0, frameAdjustment, false, age, diffToServer};
 }
@@ -127,6 +131,41 @@ int SyncEngine::steadyStateFrameAdjustment(int64_t shortM, int64_t miniM,
     return -1;
   }
   return 0;
+}
+
+int SyncEngine::scaleFrameAdjustment(int frameAdjustment, int64_t age,
+                                     size_t queueDepth) const {
+  if (frameAdjustment != 0) {
+    // Scale the ±1 nudge by how far off we are. Tiers checked
+    // widest-first, so only one applies.
+    struct { int64_t ageUs; int factor; } kAmplifyTiers[] = {
+        {12000, 6}, {8000, 4}, {4000, 2}};
+    const int64_t absAge = std::abs(age);
+    for (const auto& tier : kAmplifyTiers) {
+      if (absAge > tier.ageUs) {
+        frameAdjustment *= tier.factor;
+        break;
+      }
+    }
+  }
+
+  // Skipped when already slowing down (frameAdjustment > 0), since
+  // draining would fight that direction.
+  if (frameAdjustment <= 0) {
+    const size_t targetQueue = static_cast<size_t>(bufferMs_ / 20);
+    struct { size_t margin; size_t capMargin; int adjust; } kQueueTiers[] = {
+        {11, 2, -4}, {8, 4, -3}, {5, 6, -2}};
+    for (const auto& tier : kQueueTiers) {
+      const size_t threshold = std::min(targetQueue + tier.margin,
+                                        queueCapacity_ - tier.capMargin);
+      if (queueDepth > threshold) {
+        // min(): keep whichever correction is larger.
+        frameAdjustment = std::min(frameAdjustment, tier.adjust);
+        break;
+      }
+    }
+  }
+  return frameAdjustment;
 }
 
 }  // namespace snapclient

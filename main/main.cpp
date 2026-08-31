@@ -1,7 +1,6 @@
 #include <bell/Logger.h>
 #include <bell/utils/Task.h>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -80,7 +79,7 @@ class SnapclientTask : public bell::Task {
   void runTask() override {
     const char* kLogTag = "snapclient_task";
 
-    snapclient::SyncEngine sync;
+    snapclient::SyncEngine sync(kQueueCapacity);
     snapclient::DspProcessor dsp;
     bell::audio::SampleRate sampleRate = bell::audio::SampleRate::SR_44100HZ;
     int32_t bufferMs = 0;
@@ -182,13 +181,9 @@ class SnapclientTask : public bell::Task {
 
     client.onConnected = [&] { sync.reset(); };
 
-    std::atomic<int32_t> currentServerBufferMs{500};
-
     client.onServerSettings = [&](const snapclient::ServerSettings& s) {
       bufferMs = s.bufferMs;
       dacFixedLatencyMs = s.latencyMs;
-
-      currentServerBufferMs.store(s.bufferMs);
 
       if (bufferMs != lastSyncBufferMs) {
         lastSyncBufferMs = bufferMs;
@@ -360,68 +355,23 @@ class SnapclientTask : public bell::Task {
           continue;
         }
         if (result.decision == snapclient::PlayDecision::Play) {
-          // 1. Proportional time amplifier
-          if (result.frameAdjustment != 0) {
-              int32_t absAge = std::abs(static_cast<int32_t>(result.ageUs));
-
-              if (absAge > 12000) {          // > 12ms offset
-                  result.frameAdjustment *= 6;
-              } else if (absAge > 8000) {    // > 8ms
-                  result.frameAdjustment *= 4;
-              } else if (absAge > 4000) {    // > 4ms
-                  result.frameAdjustment *= 2;
-              }
-          }
-
-          // 2. Adaptive queue protection (space)
-          // Ideal chunk count (20ms per chunk)
-          int32_t bufferMs = currentServerBufferMs.load();
-          size_t targetQueue = static_cast<size_t>(bufferMs / 20);
-
-          // Dynamic margins, capped at the hardware limit (kQueueCapacity = 40)
-          // in case bufferMs is huge (e.g. 1000ms).
-          size_t threshold1 = std::min(targetQueue + 5, (size_t)34);
-          size_t threshold2 = std::min(targetQueue + 8, (size_t)36);
-          size_t threshold3 = std::min(targetQueue + 11, (size_t)38);
-
-          // ANTI-SPIRAL GUARD:
-          // Only drain the queue if the engine isn't already asking to slow down (> 0).
-          // A positive result.frameAdjustment means we're ahead in time;
-          // speeding up to drain the queue here would break sync.
-          if (result.frameAdjustment <= 0) {
-              int queuePressure = 0;
-              if (queueDepth > threshold3) {
-                  queuePressure = -4;
-              } else if (queueDepth > threshold2) {
-                  queuePressure = -3;
-              } else if (queueDepth > threshold1) {
-                  queuePressure = -2;
-              }
-              // The more aggressive of the two, not a blind replacement: if
-              // the amplifier already asked for more catch-up than the queue
-              // pressure, that's kept instead of overwritten (so ±1 noise in
-              // queueDepth can't undo what the amplifier already resolved).
-              result.frameAdjustment = std::min(result.frameAdjustment, queuePressure);
-          }
-          // -----------------------------------------------------
-
           chunksPlayed++;
 
-          // Exact frame count to generate
-          size_t targetFrames = frames + result.frameAdjustment;
-          scratch_resampled.resize(targetFrames * 2); // * 2 for stereo
-
-          // Apply dynamic resampling
+          // frameAdjustment is already scaled - see
+          // SyncEngine::scaleFrameAdjustment(). Resampled across the whole
+          // chunk, not a single-frame drop/duplicate at the edge, since
+          // the magnitude can now exceed one frame.
+          const size_t targetFrames =
+              static_cast<size_t>(static_cast<int>(frames) +
+                                  result.frameAdjustment);
+          scratch_resampled.resize(targetFrames * 2);  // stereo
           snapclient::DynamicResampler::process(
               reinterpret_cast<const int16_t*>(scratch.data()), frames,
-              scratch_resampled.data(), targetFrames
-          );
+              scratch_resampled.data(), targetFrames);
 
-          // Write the resampled buffer to I2S
-          const auto* writeStart = reinterpret_cast<const std::byte*>(scratch_resampled.data());
-          size_t writeLen = targetFrames * snapclient::kBytesPerFrame;
-
-          i2sSink.write(writeStart, writeLen);
+          i2sSink.write(
+              reinterpret_cast<const std::byte*>(scratch_resampled.data()),
+              targetFrames * snapclient::kBytesPerFrame);
 
           if (result.frameAdjustment < 0) {
             correctionsSkip++;
