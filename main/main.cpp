@@ -337,8 +337,7 @@ class SnapclientTask : public bell::Task {
                  scratch.size() * sizeof(int16_t), sampleRate);
 
       const int32_t dacLatencyUs =
-          static_cast<int32_t>(dacFixedLatencyMs) * 1000 +
-          static_cast<int32_t>(i2sSink.outputBufferUs());
+          static_cast<int32_t>(dacFixedLatencyMs) * 1000;
 
       // Captured once before the retry loop below, not per-iteration:
       // WaitMore re-evaluates the same not-yet-playing chunk without ever

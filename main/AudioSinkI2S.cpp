@@ -114,20 +114,8 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
   }
 
   currentSampleRate_ = sampleRate;
-  framesIntoCurrentDescriptor_ = 0;
   primeSilence();
   setMuted(false);
-}
-
-uint32_t AudioSinkI2S::outputBufferUs() const {
-  // Only the current descriptor's fill level, not kDmaDescNum's full ring
-  // (that's channel capacity/jitter cushion, not occupancy) - the ring
-  // only sits full for a writer racing to fill it, which this isn't.
-  if (currentSampleRate_ == 0) {
-    return 0;
-  }
-  return static_cast<uint32_t>(uint64_t{framesIntoCurrentDescriptor_} *
-                               1000000 / currentSampleRate_);
 }
 
 void AudioSinkI2S::primeSilence() {
@@ -160,9 +148,6 @@ void AudioSinkI2S::write(const std::byte* pcm, size_t len) {
       break;
     }
     written += chunkWritten;
-    framesIntoCurrentDescriptor_ =
-        (framesIntoCurrentDescriptor_ + chunkWritten / kBytesPerFrame) %
-        kDmaFrameNum;
   }
 }
 
