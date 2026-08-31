@@ -46,9 +46,7 @@ std::optional<bell::audio::SampleRate> toSampleRate(uint32_t hz) {
 }  // namespace
 
 SnapcastClient::SnapcastClient(Config config)
-    // Sized against a measured high-water mark (~12KB) plus margin, not a
-    // round-number guess - see main.cpp's periodic stack headroom log.
-    : bell::Task("snapcast_client", 24576, /*espPriority=*/4,
+    : bell::Task("snapcast_client", 8 * 1024, /*espPriority=*/4,
                 bell::TaskCore::CoreAny, /*espStackOnPsram=*/false),
       config_(std::move(config)) {
   startTask();

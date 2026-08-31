@@ -1,17 +1,12 @@
 #include <bell/Logger.h>
-#include <bell/utils/Semaphore.h>
 #include <bell/utils/Task.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <deque>
 #include <memory>
-#include <mutex>
 #include <thread>
 #include <vector>
-
-#include <tcb/span.hpp>
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -31,25 +26,18 @@
 #include "snapclient/ControlServer.h"
 #include "snapclient/ControlSettings.h"
 #include "snapclient/Core.h"
+#include "snapclient/DecoderTask.h"
 #include "snapclient/DspProcessor.h"
 #include "snapclient/SnapcastClient.h"
 #include "snapclient/SyncEngine.h"
 #include "snapclient/UdpLogBackend.h"
+#include "snapclient/DynamicResampler.h"
 
 namespace {
 
 const char* TAG = "snapclient";
 
 std::atomic<bool> wifiConnected{false};
-
-// Snapcast's Opus stream here always encodes 20ms frames at 48kHz -
-// 960 samples per channel. Used to size the silence placeholder written
-// in place of a chunk the pool couldn't hold, decodeOpus()'s output
-// buffer, and the Pcm-codec pool slot size below (raw PCM has no
-// compression to exploit, so a slot for it must fit a whole chunk).
-constexpr size_t kFramesPerChunk = 960;
-constexpr size_t kBytesPerFrame = 2 * sizeof(int16_t);  // stereo S16
-constexpr size_t kPcmChunkBytes = kFramesPerChunk * kBytesPerFrame;
 
 // Bounds the network-to-playback queue. A chunk acquireChunkBuffer()
 // couldn't get memory for still carries useful timing (it falls back to
@@ -58,19 +46,17 @@ constexpr size_t kPcmChunkBytes = kFramesPerChunk * kBytesPerFrame;
 // network jitter without starving the queue into unaccounted drops.
 constexpr size_t kQueueCapacity = 40;
 
+// Decode (~12ms avg) is slower than dsp+i2s-write (~6.5-7.5ms combined),
+// so 2 slots is enough for one-chunk-ahead overlap between DecoderTask
+// and the consumer; bump if soak testing shows the consumer stalling
+// here waiting on decode.
+constexpr size_t kPcmQueueCapacity = 2;
+
 int64_t nowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
-
-struct QueuedChunk {
-  int64_t serverTimeUs;
-  snapclient::Codec codec = snapclient::Codec::None;
-  // Encoded (Opus) or raw (Pcm codec) payload, exactly as received -
-  // decodeOpus() runs later, in the consumer loop, not here.
-  snapclient::ChunkBuffer payload;
-};
 
 }  // namespace
 
@@ -85,10 +71,8 @@ class SnapclientTask : public bell::Task {
   // this task's idle-poll loop starves CPU1's idle task of runtime, and
   // FreeRTOS's task watchdog only expects idle to be starved briefly, not
   // continuously.
-  // Sized against a measured high-water mark (~5.5KB) plus margin, not a
-  // round-number guess - see the periodic stack headroom log below.
   SnapclientTask()
-      : bell::Task("snapclient", 16 * 1024, 5, bell::TaskCore::Core1,
+      : bell::Task("snapclient", 8 * 1024, 5, bell::TaskCore::Core1,
                    /*espStackOnPsram=*/false) {
     startTask();
   }
@@ -101,7 +85,7 @@ class SnapclientTask : public bell::Task {
     bell::audio::SampleRate sampleRate = bell::audio::SampleRate::SR_44100HZ;
     int32_t bufferMs = 0;
     // Snapcast's per-client "latency" setting, which nothing on this end
-    // can measure directly - see outputBufferUs() for the dynamic part.
+    // can measure directly.
     int32_t dacFixedLatencyMs = 0;
     // Tracks what SyncEngine was last told, so a ServerSettings message
     // that only changed volume/mute (bundled together in the same message
@@ -164,11 +148,10 @@ class SnapclientTask : public bell::Task {
         static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MUTE_GPIO);
     snapclient::AudioSinkI2S i2sSink(sinkConfig);
 
-    std::mutex queueMutex;
-    std::deque<QueuedChunk> queue;
-    // Lets the empty-queue wait below react as soon as onAudioChunk pushes
-    // something, instead of polling on a fixed interval.
-    bell::Semaphore chunkAvailable;
+    snapclient::BoundedQueue<snapclient::QueuedChunk> queue(kQueueCapacity);
+    snapclient::BoundedQueue<snapclient::DecodedChunk> pcmQueue(
+        kPcmQueueCapacity);
+    std::atomic<uint32_t> codecGeneration{0};
 
     size_t chunksPlayed = 0;
     size_t chunksDropped = 0;
@@ -176,7 +159,6 @@ class SnapclientTask : public bell::Task {
     // faster than the other, unlike threshold noise on both.
     size_t correctionsSkip = 0;
     size_t correctionsDuplicate = 0;
-    size_t silencePlayed = 0;
 
     snapclient::SnapcastClient::Config config;
     if (!settings.serverHost().empty()) {
@@ -200,9 +182,14 @@ class SnapclientTask : public bell::Task {
 
     client.onConnected = [&] { sync.reset(); };
 
+    std::atomic<int32_t> currentServerBufferMs{500};
+
     client.onServerSettings = [&](const snapclient::ServerSettings& s) {
       bufferMs = s.bufferMs;
       dacFixedLatencyMs = s.latencyMs;
+
+      currentServerBufferMs.store(s.bufferMs);
+
       if (bufferMs != lastSyncBufferMs) {
         lastSyncBufferMs = bufferMs;
         sync.onSettingsChanged(bufferMs, static_cast<uint32_t>(sampleRate));
@@ -227,13 +214,14 @@ class SnapclientTask : public bell::Task {
       i2sSink.configure(fmt.getSampleRateValue());
       lastSyncBufferMs = bufferMs;
       sync.onSettingsChanged(bufferMs, fmt.getSampleRateValue());
-      {
-        // Queued chunks predate this codec header and would otherwise
-        // decode against the *new* decoder instance setupDecode() just
-        // recreated in SnapcastClient.
-        std::lock_guard<std::mutex> lock(queueMutex);
-        queue.clear();
-      }
+      // Queued chunks predate this codec header and would otherwise
+      // decode against the *new* decoder instance setupDecode() just
+      // recreated in SnapcastClient - bump codecGeneration first so
+      // DecoderTask can also recognize and drop anything already popped
+      // but not yet decoded/published.
+      codecGeneration.fetch_add(1, std::memory_order_relaxed);
+      queue.clear();
+      pcmQueue.clear();
       BELL_LOG(info, kLogTag, "codec ready: {} Hz, {} ch",
                fmt.getSampleRateValue(), fmt.getNumChannels());
     };
@@ -257,28 +245,18 @@ class SnapclientTask : public bell::Task {
       if (!sync.latencyReady()) {
         return;
       }
-      std::lock_guard<std::mutex> lock(queueMutex);
-      if (queue.size() >= kQueueCapacity) {
+      snapclient::QueuedChunk item;
+      item.serverTimeUs = serverTimeUs;
+      item.codec = codec;
+      item.codecGen = codecGeneration.load(std::memory_order_relaxed);
+      // An allocation failure queues a silent placeholder (item.payload
+      // left empty) instead of dropping the chunk outright - a dropped
+      // chunk leaves a gap in the played frame count that the
+      // server's clock doesn't have. See DecoderTask's silencePlayed log
+      // for how often this actually results in audible silence.
+      item.payload = snapclient::acquireChunkBuffer(payload, len);
+      if (!queue.tryPush(std::move(item))) {
         queueFullDrops++;
-      } else {
-        QueuedChunk item;
-        item.serverTimeUs = serverTimeUs;
-        item.codec = codec;
-        // An allocation failure queues a silent placeholder (item.payload
-        // left empty) instead of dropping the chunk outright - a dropped
-        // chunk leaves a gap in the played frame count that the
-        // server's clock doesn't have. See silencePlayed below for how
-        // often this actually results in audible silence.
-        item.payload = snapclient::acquireChunkBuffer(payload, len);
-        // chunkAvailable is an uncapped counting semaphore; the consumer
-        // only take()s it when idle, not once per dequeue - giving on
-        // every push would grow the count unbounded, and take() then
-        // never actually waits.
-        const bool wasEmpty = queue.empty();
-        queue.push_back(std::move(item));
-        if (wasEmpty) {
-          chunkAvailable.give();
-        }
       }
 
       // Sustained overload logs every chunk otherwise - the blocking
@@ -297,47 +275,31 @@ class SnapclientTask : public bell::Task {
       }
     };
 
+    snapclient::DecoderTask decoder(queue, pcmQueue, codecGeneration, client);
+
     BELL_LOG(info, kLogTag, "connecting to {}:{}...", config.host,
              config.port);
 
     std::vector<int16_t> scratch;
-    const std::vector<int16_t> silenceInput(kFramesPerChunk * 2, 0);
-    // Heap, not stack (like scratch above) - this task's stack is sized
-    // tight against a measured high-water mark, and a buffer this size
-    // is enough to overflow it.
-    std::vector<std::byte> decodeBuf(kPcmChunkBytes);
+    std::vector<int16_t> scratch_resampled;
+    
+    constexpr int64_t kBackgroundLogIntervalUs = 10'000'000;  // 10s
     int64_t lastQueueLogUs = 0;
-    int64_t lastTimingLogUs = 0;
-    int64_t lastPlayedLogUs = 0;
-    int64_t lastDropYieldUs = 0;
     int64_t lastStackLogUs = 0;
-    int64_t lastSilenceLogUs = 0;
-    uint32_t lastUnderrunCompensationFrames = 0;
-    int64_t dspSumUs = 0, dspMaxUs = 0;
-    int64_t i2sSumUs = 0, i2sMaxUs = 0;
-    size_t dspSamples = 0, i2sSamples = 0;
-
-    // Shared by every background log below except stack headroom (its own
-    // 10s) - a multi-hour soak needs a log short enough to read back
-    // afterwards, not several fresh lines every second.
-    constexpr int64_t kBackgroundLogIntervalUs = 60'000'000;  // 60s
+    int64_t lastPlayedLogUs = 0;
+    
     int64_t lastResyncAtUs = nowUs();
     size_t lastCorrectionsSkipLogged = 0;
     size_t lastCorrectionsDuplicateLogged = 0;
     int64_t lastAgeUs = 0;
     int64_t lastDiffToServerUs = 0;
+    uint32_t lastUnderrunCompensationFrames = 0;
+
     while (true) {
-      QueuedChunk item;
+      snapclient::DecodedChunk item;
       size_t queueDepth = 0;
-      {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        if (queue.empty()) {
-          queueDepth = 0;
-        } else {
-          item = std::move(queue.front());
-          queue.pop_front();
-          queueDepth = queue.size() + 1;
-        }
+      if (pcmQueue.tryPop(item, 10)) {
+        queueDepth = queue.size() + pcmQueue.size() + 1;
       }
 
       const int64_t logNow = nowUs();
@@ -346,92 +308,41 @@ class SnapclientTask : public bell::Task {
         // A growing gap between freeHeap and largestFreeBlock over time
         // is the fragmentation signal to watch for.
         BELL_LOG(info, kLogTag,
-                 "queue depth={} freeHeap={} largestFreeBlock={}", queueDepth,
-                 esp_get_free_heap_size(),
+                 "queue depth={} pcmQueue depth={} freeHeap={} "
+                 "largestFreeBlock={}",
+                 queue.size(), pcmQueue.size(), esp_get_free_heap_size(),
                  snapclient::chunkHeapLargestFreeBlockBytes());
       }
 
-      // Stack sizes below (SnapclientTask, SnapcastClient) are both fixed
-      // guesses, not measured - this reports real headroom so they can be
-      // right-sized instead of guessed again.
+      // Stack sizes below are all fixed guesses, not measured - this
+      // reports real headroom so they can be right-sized instead of
+      // guessed again.
       if (logNow - lastStackLogUs >= 10000000) {
         lastStackLogUs = logNow;
         BELL_LOG(info, kLogTag,
-                 "stack headroom: snapclient_task={}B snapcast_client={}B",
+                 "stack headroom: snapclient_task={}B snapcast_client={}B "
+                 "decoder_task={}B",
                  getStackHighWaterMarkWords() * sizeof(StackType_t),
-                 client.stackHighWaterMarkWords() * sizeof(StackType_t));
-      }
-
-      // Aggregated, not logged per-occurrence at either substitution site
-      // below (pool exhausted, opus decode failed) - the same sustained-
-      // overload/UART-stall reasoning as the queue-full log above.
-      if (logNow - lastSilenceLogUs >= 30000000) {
-        lastSilenceLogUs = logNow;
-        if (silencePlayed > 0) {
-          BELL_LOG(warn, kLogTag,
-                   "played {} chunks as silence (pool exhausted or opus "
-                   "decode failed) in the last 30s",
-                   silencePlayed);
-          silencePlayed = 0;
-        }
+                 client.stackHighWaterMarkWords() * sizeof(StackType_t),
+                 decoder.stackHighWaterMarkWords() * sizeof(StackType_t));
       }
 
       if (queueDepth == 0) {
-        // Woken as soon as onAudioChunk pushes something - the 10ms
-        // timeout is only a fallback. Below CONFIG_FREERTOS_HZ=100's
-        // 10ms tick, vTaskDelay rounds to 0 and just yields once, not
-        // enough for CPU1's idle task to feed the watchdog under
-        // sustained load.
-        chunkAvailable.take(10);
+        // tryPop() already waited up to 10ms internally on a miss -
+        // woken early as soon as DecoderTask pushes something.
         continue;
       }
 
-      const std::byte* dspInput;
-      size_t dspInputLen;
-      size_t frames;
-      if (!item.payload) {
-        // Pool-exhausted placeholder - no payload was ever stored for
-        // this chunk, encoded or not.
-        dspInput = reinterpret_cast<const std::byte*>(silenceInput.data());
-        dspInputLen = silenceInput.size() * sizeof(int16_t);
-        frames = kFramesPerChunk;
-        silencePlayed++;
-      } else if (item.codec == snapclient::Codec::Opus) {
-        auto decoded = client.decodeOpus(
-            tcb::span<const std::byte>(item.payload.data(),
-                                       item.payload.size()),
-            decodeBuf.data(), decodeBuf.size());
-        if (!decoded) {
-          dspInput = reinterpret_cast<const std::byte*>(silenceInput.data());
-          dspInputLen = silenceInput.size() * sizeof(int16_t);
-          frames = kFramesPerChunk;
-          silencePlayed++;
-        } else {
-          dspInput = decodeBuf.data();
-          dspInputLen = *decoded;
-          frames = dspInputLen / kBytesPerFrame;
-        }
-      } else {
-        dspInput = item.payload.data();
-        dspInputLen = item.payload.size();
-        frames = dspInputLen / kBytesPerFrame;
-      }
+      const std::byte* dspInput = item.pcm.data();
+      size_t dspInputLen = item.pcm.size();
+      size_t frames = dspInputLen / snapclient::kBytesPerFrame;
       scratch.resize(dspInputLen / sizeof(int16_t));
-      const int64_t dspStartUs = nowUs();
       dsp.process(dspInput, dspInputLen,
                  reinterpret_cast<std::byte*>(scratch.data()),
                  scratch.size() * sizeof(int16_t), sampleRate);
-      const int64_t dspUs = nowUs() - dspStartUs;
-      dspSumUs += dspUs;
-      dspMaxUs = std::max(dspMaxUs, dspUs);
-      dspSamples++;
 
-      // Recomputed fresh per chunk, not settings-cached: outputBufferUs()
-      // reflects where the previous write() actually landed in the DMA
-      // ring, not a fixed assumption about it.
       const int32_t dacLatencyUs =
-          static_cast<int32_t>(dacFixedLatencyMs) * 1000 +
-          static_cast<int32_t>(i2sSink.outputBufferUs());
+          static_cast<int32_t>(dacFixedLatencyMs) * 1000;
 
       // Captured once before the retry loop below, not per-iteration:
       // WaitMore re-evaluates the same not-yet-playing chunk without ever
@@ -439,47 +350,87 @@ class SnapclientTask : public bell::Task {
       const bool wasPlayingBeforeEval = sync.isPlaying();
 
       for (;;) {
-        auto result = sync.evaluate(item.serverTimeUs, nowUs(), queueDepth,
+        const int64_t evalStartUs = nowUs();
+        auto result = sync.evaluate(item.serverTimeUs, evalStartUs, queueDepth,
                                     dacLatencyUs);
+
         if (result.decision == snapclient::PlayDecision::WaitMore) {
           std::this_thread::sleep_for(
               std::chrono::microseconds(result.waitUs));
           continue;
         }
         if (result.decision == snapclient::PlayDecision::Play) {
+          // 1. Proportional time amplifier
+          if (result.frameAdjustment != 0) {
+              int32_t absAge = std::abs(static_cast<int32_t>(result.ageUs));
+
+              if (absAge > 12000) {          // > 12ms offset
+                  result.frameAdjustment *= 6;
+              } else if (absAge > 8000) {    // > 8ms
+                  result.frameAdjustment *= 4;
+              } else if (absAge > 4000) {    // > 4ms
+                  result.frameAdjustment *= 2;
+              }
+          }
+
+          // 2. Adaptive queue protection (space)
+          // Ideal chunk count (20ms per chunk)
+          int32_t bufferMs = currentServerBufferMs.load();
+          size_t targetQueue = static_cast<size_t>(bufferMs / 20);
+
+          // Dynamic margins, capped at the hardware limit (kQueueCapacity = 40)
+          // in case bufferMs is huge (e.g. 1000ms).
+          size_t threshold1 = std::min(targetQueue + 5, (size_t)34);
+          size_t threshold2 = std::min(targetQueue + 8, (size_t)36);
+          size_t threshold3 = std::min(targetQueue + 11, (size_t)38);
+
+          // ANTI-SPIRAL GUARD:
+          // Only drain the queue if the engine isn't already asking to slow down (> 0).
+          // A positive result.frameAdjustment means we're ahead in time;
+          // speeding up to drain the queue here would break sync.
+          if (result.frameAdjustment <= 0) {
+              int queuePressure = 0;
+              if (queueDepth > threshold3) {
+                  queuePressure = -4;
+              } else if (queueDepth > threshold2) {
+                  queuePressure = -3;
+              } else if (queueDepth > threshold1) {
+                  queuePressure = -2;
+              }
+              // The more aggressive of the two, not a blind replacement: if
+              // the amplifier already asked for more catch-up than the queue
+              // pressure, that's kept instead of overwritten (so ±1 noise in
+              // queueDepth can't undo what the amplifier already resolved).
+              result.frameAdjustment = std::min(result.frameAdjustment, queuePressure);
+          }
+          // -----------------------------------------------------
+
           chunksPlayed++;
 
-          const auto* writeStart =
-              reinterpret_cast<const std::byte*>(scratch.data());
-          size_t writeLen = scratch.size() * sizeof(int16_t);
+          // Exact frame count to generate
+          size_t targetFrames = frames + result.frameAdjustment;
+          scratch_resampled.resize(targetFrames * 2); // * 2 for stereo
 
-          // Realizes frameAdjustment on the actual I2S bytes: negative
-          // drops that many frames from this write (catch up), positive
-          // writes them again after (slow down) - see SyncEngine.cpp.
-          const size_t adjustFrames =
-              static_cast<size_t>(result.frameAdjustment < 0
-                                      ? -result.frameAdjustment
-                                      : result.frameAdjustment);
-          const size_t adjustBytes = adjustFrames * kBytesPerFrame;
-          if (result.frameAdjustment < 0 && writeLen >= adjustBytes) {
-            writeLen -= adjustBytes;
-          }
-          const int64_t i2sStartUs = nowUs();
+          // Apply dynamic resampling
+          snapclient::DynamicResampler::process(
+              reinterpret_cast<const int16_t*>(scratch.data()), frames,
+              scratch_resampled.data(), targetFrames
+          );
+
+          // Write the resampled buffer to I2S
+          const auto* writeStart = reinterpret_cast<const std::byte*>(scratch_resampled.data());
+          size_t writeLen = targetFrames * snapclient::kBytesPerFrame;
+
           i2sSink.write(writeStart, writeLen);
-          if (result.frameAdjustment > 0 && writeLen >= adjustBytes) {
-            i2sSink.write(writeStart + writeLen - adjustBytes, adjustBytes);
-          }
-          const int64_t i2sUs = nowUs() - i2sStartUs;
-          i2sSumUs += i2sUs;
-          i2sMaxUs = std::max(i2sMaxUs, i2sUs);
-          i2sSamples++;
 
           if (result.frameAdjustment < 0) {
             correctionsSkip++;
           } else if (result.frameAdjustment > 0) {
             correctionsDuplicate++;
           }
-          sync.onFramesWritten(frames + result.frameAdjustment);
+
+          // Tell SyncEngine the actual frames just written
+          sync.onFramesWritten(targetFrames);
 
           // Underruns advance the DAC's clock without a matching write() -
           // feed that into SyncEngine too. Only while already playing: a
@@ -503,30 +454,17 @@ class SnapclientTask : public bell::Task {
           lastDiffToServerUs = result.diffToServerUs;
         } else {
           chunksDropped++;
-          // Unlike Play (blocks on I2S write) or WaitMore (sleeps), this
-          // path doesn't yield - sustained drops would spin this core hot
-          // enough to starve the network task, delaying chunks further
-          // and keeping every next one too late to recover. Throttled,
-          // not per-drop, so draining a short burst isn't itself
-          // rate-limited below real-time.
-          const int64_t yieldNow = nowUs();
-          if (yieldNow - lastDropYieldUs >= 20000) {
-            lastDropYieldUs = yieldNow;
-            // take(), not sleep_for(): returns as soon as a new chunk
-            // arrives instead of always waiting the full timeout.
-            chunkAvailable.take(10);
-          }
+
+          // Yield briefly so we don't starve other tasks
+          std::this_thread::yield();
 
           if (!sync.isPlaying()) {
             // Still resyncing after this drop - the rest of the backlog
             // only gets staler evaluated one at a time in FIFO order,
             // since real time keeps advancing while working through it.
-            // Jump straight to the newest queued chunk instead.
-            std::lock_guard<std::mutex> lock(queueMutex);
-            while (queue.size() > 1) {
-              queue.pop_front();
-              chunksDropped++;
-            }
+            // Jump straight to the newest chunk instead, on both queues.
+            chunksDropped += pcmQueue.drainToNewest(1);
+            chunksDropped += queue.drainToNewest(1);
           }
         }
         break;
@@ -540,21 +478,6 @@ class SnapclientTask : public bell::Task {
       }
 
       const int64_t timingLogNow = nowUs();
-      if (timingLogNow - lastTimingLogUs >= kBackgroundLogIntervalUs) {
-        lastTimingLogUs = timingLogNow;
-        BELL_LOG(info, kLogTag,
-                 "loop timing: dspAvg={} dspMax={} n={} | i2sAvg={} "
-                 "i2sMax={} n={}",
-                 dspSamples ? dspSumUs / dspSamples : 0, dspMaxUs,
-                 dspSamples, i2sSamples ? i2sSumUs / i2sSamples : 0,
-                 i2sMaxUs, i2sSamples);
-        dspSumUs = 0;
-        dspMaxUs = 0;
-        dspSamples = 0;
-        i2sSumUs = 0;
-        i2sMaxUs = 0;
-        i2sSamples = 0;
-      }
 
       if (timingLogNow - lastPlayedLogUs >= kBackgroundLogIntervalUs) {
         lastPlayedLogUs = timingLogNow;

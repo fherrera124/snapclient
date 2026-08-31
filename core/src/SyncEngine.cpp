@@ -93,8 +93,9 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
   if (shortMedian_.full() && std::abs(shortMedian_.median()) > kHardResyncThresholdUs) {
     BELL_LOG(warn, kLogTag,
              "hard resync: age={} shortMedian={} miniMedian={} "
-             "diffToServer={}",
-             age, shortMedian_.median(), miniMedian_.median(), diffToServer);
+             "diffToServer={} dacLatencyUs={}",
+             age, shortMedian_.median(), miniMedian_.median(), diffToServer,
+             dacLatencyUs);
     playing_ = false;
     shortMedian_.clear();
     miniMedian_.clear();

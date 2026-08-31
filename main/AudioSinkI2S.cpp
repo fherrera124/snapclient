@@ -13,7 +13,7 @@ constexpr uint32_t kPrimeSilenceMs = 100;
 constexpr size_t kBytesPerFrame = 2 /*channels*/ * sizeof(int16_t);
 constexpr size_t kSilenceChunkFrames = 256;
 constexpr size_t kDmaDescNum = 4;
-constexpr size_t kDmaFrameNum = 1023;
+constexpr size_t kDmaFrameNum = 960;
 }  // namespace
 
 AudioSinkI2S::AudioSinkI2S(Config config) : config_(config) {
@@ -84,6 +84,9 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
           },
   };
 
+  // Force the high-precision Audio PLL clock source
+  stdConfig.clk_cfg.clk_src = I2S_CLK_SRC_APLL;
+
   err = i2s_channel_init_std_mode(txChan_, &stdConfig);
   if (err != ESP_OK) {
     BELL_LOG(error, LOG_TAG, "i2s_channel_init_std_mode failed: {}",
@@ -111,22 +114,8 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
   }
 
   currentSampleRate_ = sampleRate;
-  framesIntoCurrentDescriptor_ = 0;
   primeSilence();
   setMuted(false);
-}
-
-uint32_t AudioSinkI2S::outputBufferUs() const {
-  // The only buffered-but-undrained amount write() pacing to real time
-  // (see SyncEngine's WaitMore) actually guarantees - not kDmaDescNum's
-  // full ring, which is DMA channel capacity (jitter cushion), not
-  // occupancy. Assuming extra descriptors sit full only holds for a
-  // writer racing to fill the ring, which this one deliberately isn't.
-  if (currentSampleRate_ == 0) {
-    return 0;
-  }
-  return static_cast<uint32_t>(uint64_t{framesIntoCurrentDescriptor_} *
-                               1000000 / currentSampleRate_);
 }
 
 void AudioSinkI2S::primeSilence() {
@@ -159,9 +148,6 @@ void AudioSinkI2S::write(const std::byte* pcm, size_t len) {
       break;
     }
     written += chunkWritten;
-    framesIntoCurrentDescriptor_ =
-        (framesIntoCurrentDescriptor_ + chunkWritten / kBytesPerFrame) %
-        kDmaFrameNum;
   }
 }
 
