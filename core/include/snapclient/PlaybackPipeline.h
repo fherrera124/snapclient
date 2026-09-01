@@ -33,24 +33,6 @@ class RateLimiter {
   int64_t lastUs_ = 0;
 };
 
-struct PlaybackStats {
-  size_t chunksPlayed = 0;
-  size_t chunksDropped = 0;
-  // Split by direction: a real clock-rate bias grows one side much
-  // faster than the other, unlike threshold noise on both.
-  size_t correctionsSkip = 0;
-  size_t correctionsDuplicate = 0;
-  size_t lastCorrectionsSkipLogged = 0;
-  size_t lastCorrectionsDuplicateLogged = 0;
-  int64_t lastAgeUs = 0;
-  int64_t lastDiffToServerUs = 0;
-  int64_t lastResyncAtUs = 0;
-  uint32_t lastUnderrunCompensationFrames = 0;
-
-  void maybeLogSummary(RateLimiter& limiter, const char* logTag, int64_t now,
-                       size_t queueDepth, uint32_t i2sOverflow);
-};
-
 // The five onXxx methods run on SnapcastClient's own thread; consumeOnce()
 // runs on the caller's - plain reads/writes across that boundary, no
 // synchronization.
@@ -69,13 +51,7 @@ class PlaybackPipeline {
 
   // Pops and plays (or drops) one chunk, or returns immediately if none
   // are ready yet. Call in a tight loop.
-  void consumeOnce(PlaybackStats& stats);
-
-  size_t rawQueueSize() { return queue_.size(); }
-  size_t pcmQueueSize() { return pcmQueue_.size(); }
-  size_t decoderStackHighWaterMarkWords() const {
-    return decoder_.stackHighWaterMarkWords();
-  }
+  void consumeOnce();
 
  private:
   // Bounds the network-to-playback queue. A chunk acquireChunkBuffer()
@@ -93,7 +69,6 @@ class PlaybackPipeline {
   // and the consumer; bump if soak testing shows the consumer stalling
   // here waiting on decode.
   static constexpr size_t kPcmQueueCapacity = 2;
-  static constexpr int64_t kBackgroundLogIntervalUs = 10'000'000;  // 10s
   // Longer than shortMedian_'s ~2s window, so one drain's outliers
   // clear it before the next drain's debounce could complete.
   static constexpr int64_t kQueueExcessSustainedUs = 3'000'000;  // 3s
@@ -122,8 +97,6 @@ class PlaybackPipeline {
   int32_t lastSyncBufferMs_ = 0;
 
   RateLimiter serverSettingsLogLimiter_;
-  RateLimiter dropLogLimiter_;
-  size_t queueFullDrops_ = 0;
   // A chunk dropped in onAudioChunk() never calls sync_.onFramesWritten(),
   // so sync_'s clock would fall behind real elapsed server-time - deferred
   // here since onAudioChunk() runs on a different thread than sync_'s.
@@ -132,7 +105,7 @@ class PlaybackPipeline {
   std::vector<int16_t> scratch_;
   std::vector<int16_t> scratchResampled_;
   int64_t queueExcessSinceUs_ = 0;
-  RateLimiter playedLogLimiter_{kBackgroundLogIntervalUs};
+  uint32_t lastUnderrunCompensationFrames_ = 0;
 };
 
 }  // namespace snapclient

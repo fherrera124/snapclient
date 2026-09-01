@@ -20,29 +20,6 @@ int64_t nowUs() {
 
 }  // namespace
 
-void PlaybackStats::maybeLogSummary(RateLimiter& limiter, const char* logTag,
-                                    int64_t now, size_t queueDepth,
-                                    uint32_t i2sOverflow) {
-  if (!limiter.due(now)) {
-    return;
-  }
-  // skip/dup are deltas since the last log, not running totals - those
-  // lose resolution over a multi-hour soak.
-  const int64_t deltaSkip =
-      static_cast<int64_t>(correctionsSkip - lastCorrectionsSkipLogged);
-  const int64_t deltaDuplicate = static_cast<int64_t>(
-      correctionsDuplicate - lastCorrectionsDuplicateLogged);
-  lastCorrectionsSkipLogged = correctionsSkip;
-  lastCorrectionsDuplicateLogged = correctionsDuplicate;
-  BELL_LOG(info, logTag,
-           "played={} dropped={} queued={} i2sSendQOverflow={} "
-           "ageUs={} diffToServerUs={} netCorrection={} (skip={} "
-           "dup={}) playingForS={}",
-           chunksPlayed, chunksDropped, queueDepth - 1, i2sOverflow, lastAgeUs,
-           lastDiffToServerUs, deltaSkip - deltaDuplicate, deltaSkip,
-           deltaDuplicate, (now - lastResyncAtUs) / 1000000);
-}
-
 PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
                                    const char* logTag)
     : logTag_(logTag),
@@ -52,8 +29,7 @@ PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
       pcmQueue_(kPcmQueueCapacity),
       decoder_(queue_, pcmQueue_, codecGeneration_, client),
       client_(client),
-      serverSettingsLogLimiter_(1'000'000),
-      dropLogLimiter_(30'000'000) {}
+      serverSettingsLogLimiter_(1'000'000) {}
 
 void PlaybackPipeline::applyDspSettings(DspFlow flow,
                                         const DspFilterParams& params) {
@@ -74,8 +50,8 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
   dsp_.setVolume(static_cast<float>(s.volume) / 100.0f);
   audioSink_.setMuted(s.muted);
 
-  // A UI volume slider sends one of these per tick while dragging - same
-  // UART-stall reasoning as the drop log below for throttling it.
+  // A UI volume slider sends one of these per tick while dragging - a
+  // blocking UART write per tick would stall the audio hot path.
   if (serverSettingsLogLimiter_.due(nowUs())) {
     BELL_LOG(info, logTag_, "server settings: bufferMs={} volume={} muted={}",
              s.bufferMs, s.volume, s.muted);
@@ -121,7 +97,6 @@ void PlaybackPipeline::onAudioChunk(Codec codec, const std::byte* payload,
       kQueueCapacity, kQueueMemoryBudgetBytes / std::max<size_t>(len, 1));
 
   if (queue_.size() >= effectiveQueueCeiling) {
-    queueFullDrops_++;
     droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
   } else {
     QueuedChunk item;
@@ -131,30 +106,15 @@ void PlaybackPipeline::onAudioChunk(Codec codec, const std::byte* payload,
     // An allocation failure queues a silent placeholder (item.payload left
     // empty) instead of dropping the chunk outright - a dropped chunk
     // leaves a gap in the played frame count that the server's clock
-    // doesn't have. See DecoderTask's silencePlayed log for how often this
-    // actually results in audible silence.
+    // doesn't have.
     item.payload = acquireChunkBuffer(payload, len);
     if (!queue_.tryPush(std::move(item))) {
-      queueFullDrops_++;
       droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
-    }
-  }
-
-  // Sustained overload logs every chunk otherwise - the blocking UART
-  // write itself then becomes part of the overload, up to starving other
-  // tasks long enough to trip the watchdog. 30s, not 1s: an occasional
-  // single dropped chunk is normal jitter, not something worth a line
-  // every second.
-  if (dropLogLimiter_.due(nowUs())) {
-    if (queueFullDrops_ > 0) {
-      BELL_LOG(warn, logTag_, "dropped {} chunks (queue full) in the last 30s",
-               queueFullDrops_);
-      queueFullDrops_ = 0;
     }
   }
 }
 
-void PlaybackPipeline::consumeOnce(PlaybackStats& stats) {
+void PlaybackPipeline::consumeOnce() {
   // Applied here, not in onAudioChunk() - see droppedChunkFrames_'s comment.
   const size_t droppedFrames =
       droppedChunkFrames_.exchange(0, std::memory_order_relaxed);
@@ -197,8 +157,6 @@ void PlaybackPipeline::consumeOnce(PlaybackStats& stats) {
       continue;
     }
     if (result.decision == PlayDecision::Play) {
-      stats.chunksPlayed++;
-
       // frameAdjustment is already scaled - see
       // SyncEngine::scaleFrameAdjustment(). Resampled across the whole
       // chunk, not a single-frame drop/duplicate at the edge, since the
@@ -212,12 +170,6 @@ void PlaybackPipeline::consumeOnce(PlaybackStats& stats) {
       audioSink_.write(reinterpret_cast<const std::byte*>(scratchResampled_.data()),
                        targetFrames * kBytesPerFrame);
 
-      if (result.frameAdjustment < 0) {
-        stats.correctionsSkip++;
-      } else if (result.frameAdjustment > 0) {
-        stats.correctionsDuplicate++;
-      }
-
       // Tell SyncEngine the actual frames just written
       sync_.onFramesWritten(targetFrames);
 
@@ -228,22 +180,13 @@ void PlaybackPipeline::consumeOnce(PlaybackStats& stats) {
       const uint32_t underrunFrames = audioSink_.underrunCompensationFrames();
       if (wasPlayingBeforeEval) {
         const uint32_t underrunDelta =
-            underrunFrames - stats.lastUnderrunCompensationFrames;
+            underrunFrames - lastUnderrunCompensationFrames_;
         if (underrunDelta > 0) {
           sync_.onFramesWritten(underrunDelta);
         }
       }
-      stats.lastUnderrunCompensationFrames = underrunFrames;
-
-      // shortMedian_ isn't full on the very first chunk(s) after a
-      // resync, so evaluate() reports ageUs=0/diffToServerUs=0 then -
-      // harmless here since the drift log below only cares about the
-      // steady-state trend over minutes/hours, not that transient.
-      stats.lastAgeUs = result.ageUs;
-      stats.lastDiffToServerUs = result.diffToServerUs;
+      lastUnderrunCompensationFrames_ = underrunFrames;
     } else {
-      stats.chunksDropped++;
-
       // Yield briefly so we don't starve other tasks
       std::this_thread::yield();
 
@@ -252,8 +195,8 @@ void PlaybackPipeline::consumeOnce(PlaybackStats& stats) {
         // gets staler evaluated one at a time in FIFO order, since real
         // time keeps advancing while working through it. Jump straight
         // to the newest chunk instead, on both queues.
-        stats.chunksDropped += pcmQueue_.drainToNewest(1);
-        stats.chunksDropped += queue_.drainToNewest(1);
+        pcmQueue_.drainToNewest(1);
+        queue_.drainToNewest(1);
       }
     }
     break;
@@ -279,7 +222,6 @@ void PlaybackPipeline::consumeOnce(PlaybackStats& stats) {
           const size_t dropped = queue_.drainToNewest(healthyQueueTarget);
           if (dropped > 0) {
             sync_.onFramesWritten(dropped * kFramesPerChunk);
-            stats.chunksDropped += dropped;
             BELL_LOG(warn, logTag_,
                      "queue excess: raw queue {} -> {} (dropped {} chunks, "
                      "compensated {} frames)",
@@ -296,16 +238,6 @@ void PlaybackPipeline::consumeOnce(PlaybackStats& stats) {
     // Explicit reset - a resync's own drain already clears this anyway.
     queueExcessSinceUs_ = 0;
   }
-
-  // playing_ went false -> true: evaluate() just reset
-  // playbackStartTimeUs_/samplesWritten_ (see SyncEngine.cpp), from a
-  // hard resync or a fresh connection.
-  if (!wasPlayingBeforeEval && sync_.isPlaying()) {
-    stats.lastResyncAtUs = nowUs();
-  }
-
-  stats.maybeLogSummary(playedLogLimiter_, logTag_, nowUs(), queueDepth,
-                        audioSink_.sendQueueOverflowCount());
 }
 
 }  // namespace snapclient

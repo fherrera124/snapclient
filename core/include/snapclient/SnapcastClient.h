@@ -79,11 +79,6 @@ class SnapcastClient : public bell::Task {
   bell::Result<size_t> decodeOpus(tcb::span<const std::byte> encoded,
                                   std::byte* out, size_t outCapacity);
 
-  // Task::getStackHighWaterMarkWords() is protected - exposed here so a
-  // caller can size this task's stack against real usage instead of
-  // guessing.
-  size_t stackHighWaterMarkWords() const { return getStackHighWaterMarkWords(); }
-
  protected:
   void taskLoop() override;
   void wakeTask() override;

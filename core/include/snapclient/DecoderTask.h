@@ -44,12 +44,6 @@ class DecoderTask : public bell::Task {
               BoundedQueue<DecodedChunk>& pcmQueue,
               std::atomic<uint32_t>& codecGeneration, SnapcastClient& client);
 
-  // Task::getStackHighWaterMarkWords() is protected - exposed here so a
-  // caller can size this task's stack against real usage.
-  size_t stackHighWaterMarkWords() const {
-    return getStackHighWaterMarkWords();
-  }
-
  protected:
   void runTask() override;
 

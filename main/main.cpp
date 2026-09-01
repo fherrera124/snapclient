@@ -32,12 +32,6 @@ const char* TAG = "snapclient";
 
 std::atomic<bool> wifiConnected{false};
 
-int64_t nowUs() {
-  return std::chrono::duration_cast<std::chrono::microseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
 snapclient::AudioSinkI2S::Config buildSinkConfig() {
   snapclient::AudioSinkI2S::Config sinkConfig;
   sinkConfig.bclkPin = static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_BCLK_GPIO);
@@ -156,39 +150,8 @@ class SnapclientTask : public bell::Task {
     BELL_LOG(info, kLogTag, "connecting to {}:{}...", config.host,
              config.port);
 
-    constexpr int64_t kBackgroundLogIntervalUs = 10'000'000;  // 10s
-    snapclient::RateLimiter queueLogLimiter(kBackgroundLogIntervalUs);
-    snapclient::RateLimiter stackLogLimiter(kBackgroundLogIntervalUs);
-    snapclient::PlaybackStats stats;
-    stats.lastResyncAtUs = nowUs();
-
     while (true) {
-      const int64_t logNow = nowUs();
-      if (queueLogLimiter.due(logNow)) {
-        // A growing gap between freeHeap and largestFreeBlock over time
-        // is the fragmentation signal to watch for.
-        BELL_LOG(info, kLogTag,
-                 "queue depth={} pcmQueue depth={} freeHeap={} "
-                 "largestFreeBlock={}",
-                 pipeline->rawQueueSize(), pipeline->pcmQueueSize(),
-                 esp_get_free_heap_size(),
-                 snapclient::chunkHeapLargestFreeBlockBytes());
-      }
-
-      // Stack sizes below are all fixed guesses, not measured - this
-      // reports real headroom so they can be right-sized instead of
-      // guessed again.
-      if (stackLogLimiter.due(logNow)) {
-        BELL_LOG(info, kLogTag,
-                 "stack headroom: snapclient_task={}B snapcast_client={}B "
-                 "decoder_task={}B",
-                 getStackHighWaterMarkWords() * sizeof(StackType_t),
-                 client.stackHighWaterMarkWords() * sizeof(StackType_t),
-                 pipeline->decoderStackHighWaterMarkWords() *
-                     sizeof(StackType_t));
-      }
-
-      pipeline->consumeOnce(stats);
+      pipeline->consumeOnce();
     }
   }
 };
