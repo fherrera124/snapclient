@@ -279,6 +279,9 @@ class SnapclientTask : public bell::Task {
     std::vector<int16_t> scratch_resampled;
     
     constexpr int64_t kBackgroundLogIntervalUs = 10'000'000;  // 10s
+    // Longer than shortMedian_'s ~2s window, so one drain's outliers
+    // clear it before the next drain's debounce could complete.
+    constexpr int64_t kQueueExcessSustainedUs = 3'000'000;  // 3s debounce
     int64_t lastQueueLogUs = 0;
     int64_t lastStackLogUs = 0;
     int64_t lastPlayedLogUs = 0;
@@ -289,6 +292,7 @@ class SnapclientTask : public bell::Task {
     int64_t lastAgeUs = 0;
     int64_t lastDiffToServerUs = 0;
     uint32_t lastUnderrunCompensationFrames = 0;
+    int64_t queueExcessSinceUs = 0;
 
     while (true) {
       snapclient::DecodedChunk item;
@@ -418,6 +422,44 @@ class SnapclientTask : public bell::Task {
           }
         }
         break;
+      }
+
+      // Frame-level correction can't shrink queue.size() by a whole chunk,
+      // so backlog that never trips a hard resync otherwise never drains.
+      // Compensates via onFramesWritten(), same as underrun does above.
+      if (wasPlayingBeforeEval) {
+        const int64_t queueExcessCheckNowUs = nowUs();
+        const size_t targetQueue = static_cast<size_t>(bufferMs / 20);
+        // Below ~220ms bufferMs, targetQueue-8 would underflow - disable
+        // rather than let a wrapped size_t make the check silently inert.
+        if (targetQueue > 11) {
+          const size_t healthyQueueTarget = targetQueue - 8;
+          const size_t queueExcessThreshold = healthyQueueTarget + 3;
+          const size_t rawQueueSize = queue.size();
+          if (rawQueueSize > queueExcessThreshold) {
+            if (queueExcessSinceUs == 0) {
+              queueExcessSinceUs = queueExcessCheckNowUs;
+            } else if (queueExcessCheckNowUs - queueExcessSinceUs >=
+                      kQueueExcessSustainedUs) {
+              const size_t dropped = queue.drainToNewest(healthyQueueTarget);
+              if (dropped > 0) {
+                sync.onFramesWritten(dropped * snapclient::kFramesPerChunk);
+                chunksDropped += dropped;
+                BELL_LOG(warn, kLogTag,
+                         "queue excess: raw queue {} -> {} (dropped {} "
+                         "chunks, compensated {} frames)",
+                         rawQueueSize, healthyQueueTarget, dropped,
+                         dropped * snapclient::kFramesPerChunk);
+              }
+              queueExcessSinceUs = 0;
+            }
+          } else {
+            queueExcessSinceUs = 0;
+          }
+        }
+      } else {
+        // Explicit reset - a resync's own drain already clears this anyway.
+        queueExcessSinceUs = 0;
       }
 
       // playing_ went false -> true: evaluate() just reset

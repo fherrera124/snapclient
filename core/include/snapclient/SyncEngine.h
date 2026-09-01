@@ -62,7 +62,7 @@ class SyncEngine {
 
  private:
   static constexpr uint32_t kLatencyFilterFull = 29;
-  static constexpr int64_t kHardResyncThresholdUs = 100000;
+  static constexpr int64_t kHardResyncThresholdUs = 10000;
   static constexpr int64_t kShortOffsetUs = 128;
   static constexpr int64_t kMiniOffsetUs = 64;
   // A chunk within this window of its target start time is treated as
