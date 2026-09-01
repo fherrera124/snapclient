@@ -18,6 +18,7 @@
 #include "sdkconfig.h"
 
 #include "AudioSinkI2S.h"
+#include "GptimerWaiter.h"
 #include "ImprovWifi.h"
 #include "NvsSettingsStore.h"
 #include "snapclient/ControlServer.h"
@@ -51,12 +52,13 @@ snapclient::AudioSinkI2S::Config buildSinkConfig() {
 class SnapclientTask : public bell::Task {
  public:
   // espStackOnPsram=false: no assumption that the target board has PSRAM.
-  // espPriority=5: must be above tskIDLE_PRIORITY (0) - at equal priority
-  // this task's idle-poll loop starves CPU1's idle task of runtime, and
-  // FreeRTOS's task watchdog only expects idle to be starved briefly, not
-  // continuously.
+  // espPriority=15 -> actual FreeRTOS priority 20 (bell::Task adds
+  // CONFIG_PTHREAD_TASK_PRIO_DEFAULT=5) - above CONFIG_LWIP_TCPIP_TASK_PRIO
+  // (18), so a pending WaitMore/DMA wakeup preempts lwIP instead of queuing
+  // behind it. Still blocks efficiently (queue/timer/DMA waits), so idle
+  // isn't starved.
   SnapclientTask()
-      : bell::Task("snapclient", 8 * 1024, 5, bell::TaskCore::Core1,
+      : bell::Task("snapclient", 8 * 1024, 15, bell::TaskCore::Core1,
                    /*espStackOnPsram=*/false) {
     startTask();
   }
@@ -123,9 +125,10 @@ class SnapclientTask : public bell::Task {
     }
     snapclient::SnapcastClient client(config);
     snapclient::AudioSinkI2S i2sSink(buildSinkConfig());
+    snapclient::GptimerWaiter waiter;
 
-    pipeline = std::make_unique<snapclient::PlaybackPipeline>(client, i2sSink,
-                                                              kLogTag);
+    pipeline = std::make_unique<snapclient::PlaybackPipeline>(
+        client, i2sSink, waiter, kLogTag);
     pipeline->applyDspSettings(settings.activeFlow(),
                                settings.flowParams(settings.activeFlow()));
 

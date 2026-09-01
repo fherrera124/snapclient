@@ -65,12 +65,6 @@ class SyncEngine {
   static constexpr int64_t kHardResyncThresholdUs = 10000;
   static constexpr int64_t kShortOffsetUs = 128;
   static constexpr int64_t kMiniOffsetUs = 64;
-  // A chunk within this window of its target start time is treated as
-  // on-time. Asymmetric on purpose: an early chunk just waits and
-  // rechecks itself (WaitMore) at the exact remaining delay, but a late
-  // one is dropped with no retry - a small systematic (not jittery)
-  // lateness bias would otherwise reject every chunk forever.
-  static constexpr int64_t kInitialSyncEarlyToleranceUs = 2000;
   // Must stay wide enough to tolerate DSP processing running inline in
   // this per-chunk path before evaluate() samples nowUs(), on top of
   // ordinary network/scheduling jitter.

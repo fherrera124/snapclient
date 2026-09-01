@@ -21,15 +21,17 @@ int64_t nowUs() {
 }  // namespace
 
 PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
-                                   const char* logTag)
+                                   PrecisionWaiter& waiter, const char* logTag)
     : logTag_(logTag),
       sync_(kQueueCapacity),
       audioSink_(audioSink),
+      waiter_(waiter),
       queue_(kQueueCapacity),
       pcmQueue_(kPcmQueueCapacity),
       decoder_(queue_, pcmQueue_, codecGeneration_, client),
       client_(client),
-      serverSettingsLogLimiter_(1'000'000) {}
+      serverSettingsLogLimiter_(1'000'000),
+      queueDiagLogLimiter_(3'000'000) {}
 
 void PlaybackPipeline::applyDspSettings(DspFlow flow,
                                         const DspFilterParams& params) {
@@ -156,7 +158,7 @@ void PlaybackPipeline::consumeOnce() {
                                  dacLatencyUs);
 
     if (result.decision == PlayDecision::WaitMore) {
-      std::this_thread::sleep_for(std::chrono::microseconds(result.waitUs));
+      waiter_.waitUs(result.waitUs);
       continue;
     }
     if (result.decision == PlayDecision::Play) {
@@ -208,6 +210,13 @@ void PlaybackPipeline::consumeOnce() {
       const size_t healthyQueueTarget = targetQueue - 8;
       const size_t queueExcessThreshold = healthyQueueTarget + 3;
       const size_t rawQueueSize = queue_.size();
+      if (queueDiagLogLimiter_.due(queueExcessCheckNowUs)) {
+        BELL_LOG(info, logTag_,
+                 "DIAG queue depth: raw={} pcm={} healthyTarget={} "
+                 "excessThreshold={}",
+                 rawQueueSize, pcmQueue_.size(), healthyQueueTarget,
+                 queueExcessThreshold);
+      }
       if (rawQueueSize > queueExcessThreshold) {
         if (queueExcessSinceUs_ == 0) {
           queueExcessSinceUs_ = queueExcessCheckNowUs;

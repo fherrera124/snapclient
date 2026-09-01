@@ -51,7 +51,7 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
   if (!playing_) {
     const int64_t age =
         serverNowUs - chunkServerTimeUs - bufferUs + dacLatencyUs;
-    if (age < -kInitialSyncEarlyToleranceUs) {
+    if (age < 0) {
       return {PlayDecision::WaitMore, -age, 0, false};
     }
     if (age > kInitialSyncLateToleranceUs) {
@@ -74,6 +74,7 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
     playbackStartTimeUs_ = nowUs;
     samplesWritten_ = 0;
     playing_ = true;
+    BELL_LOG(info, kLogTag, "initial sync locked: age={}us", age);
     return {PlayDecision::Play, 0, 0, false};
   }
 

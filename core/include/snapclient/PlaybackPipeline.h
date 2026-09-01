@@ -12,6 +12,7 @@
 #include "snapclient/ChunkBuffer.h"
 #include "snapclient/DecoderTask.h"
 #include "snapclient/DspProcessor.h"
+#include "snapclient/PrecisionWaiter.h"
 #include "snapclient/SnapcastClient.h"
 #include "snapclient/SyncEngine.h"
 
@@ -39,7 +40,7 @@ class RateLimiter {
 class PlaybackPipeline {
  public:
   PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
-                   const char* logTag);
+                   PrecisionWaiter& waiter, const char* logTag);
 
   void applyDspSettings(DspFlow flow, const DspFilterParams& params);
   void onConnected();
@@ -78,6 +79,7 @@ class PlaybackPipeline {
   SyncEngine sync_;
   DspProcessor dsp_;
   AudioSink& audioSink_;
+  PrecisionWaiter& waiter_;
   BoundedQueue<QueuedChunk> queue_;
   BoundedQueue<DecodedChunk> pcmQueue_;
   std::atomic<uint32_t> codecGeneration_{0};
@@ -101,6 +103,9 @@ class PlaybackPipeline {
   int32_t lastSyncDacLatencyMs_ = 0;
 
   RateLimiter serverSettingsLogLimiter_;
+  // TEMP DIAG: remove once the queue-depth-vs-web-client-lead investigation
+  // is done.
+  RateLimiter queueDiagLogLimiter_;
   // A chunk dropped in onAudioChunk() never calls sync_.onFramesWritten(),
   // so sync_'s clock would fall behind real elapsed server-time - deferred
   // here since onAudioChunk() runs on a different thread than sync_'s.
