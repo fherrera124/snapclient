@@ -6,6 +6,7 @@
 
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
+#include "snapclient/AudioSink.h"
 
 namespace snapclient {
 
@@ -14,7 +15,7 @@ namespace snapclient {
 // on i2s_channel_write() on the caller's own thread, since SyncEngine's
 // per-chunk pacing already happens there and must not be blurred by
 // another buffering layer. 16-bit stereo only.
-class AudioSinkI2S {
+class AudioSinkI2S : public snapclient::AudioSink {
  public:
   struct Config {
     int port = I2S_NUM_0;
@@ -35,21 +36,21 @@ class AudioSinkI2S {
 
   // Tears down and recreates the I2S channel only if sampleRate differs
   // from the last call (or this is the first call).
-  void configure(uint32_t sampleRate);
+  void configure(uint32_t sampleRate) override;
 
-  void write(const std::byte* pcm, size_t len);
+  void write(const std::byte* pcm, size_t len) override;
 
   // No-op if Config::mutePin is GPIO_NUM_NC.
-  void setMuted(bool muted);
+  void setMuted(bool muted) override;
 
   // Cumulative count of DMA-underrun events (a zeroed buffer sent instead
   // of fresh data). ISR-incremented, safe to read from any task.
-  uint32_t sendQueueOverflowCount() const;
+  uint32_t sendQueueOverflowCount() const override;
 
   // sendQueueOverflowCount() in frames: each event is exactly one
   // descriptor's worth (kDmaFrameNum), since the driver fires it once per
   // completed descriptor while the queue stays starved.
-  uint32_t underrunCompensationFrames() const;
+  uint32_t underrunCompensationFrames() const override;
 
  private:
   const char* LOG_TAG = "AudioSinkI2S";

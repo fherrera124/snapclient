@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <new>
 #include <optional>
 #include <thread>
 
@@ -169,28 +170,34 @@ bool SnapcastClient::readAndDispatchOne() {
   base->received.sec = static_cast<int32_t>(receivedAt / 1000000);
   base->received.usec = static_cast<int32_t>(receivedAt % 1000000);
 
-  std::vector<std::byte> payload(base->size);
-  if (base->size > 0 && !readExact(payload.data(), payload.size())) {
-    BELL_LOG(warn, LOG_TAG, "reading message payload failed");
-    return false;
-  }
-
   bool ok = true;
-  switch (base->type) {
-    case MessageType::CodecHeader:
-      ok = handleCodecHeader(payload.data(), payload.size());
-      break;
-    case MessageType::WireChunk:
-      handleWireChunk(payload.data(), payload.size());
-      break;
-    case MessageType::ServerSettings:
-      handleServerSettings(payload.data(), payload.size());
-      break;
-    case MessageType::Time:
-      handleTime(*base, payload.data(), payload.size());
-      break;
-    default:
-      break;
+  try {
+    std::vector<std::byte> payload(base->size);
+    if (base->size > 0 && !readExact(payload.data(), payload.size())) {
+      BELL_LOG(warn, LOG_TAG, "reading message payload failed");
+      return false;
+    }
+
+    switch (base->type) {
+      case MessageType::CodecHeader:
+        ok = handleCodecHeader(payload.data(), payload.size());
+        break;
+      case MessageType::WireChunk:
+        handleWireChunk(payload.data(), payload.size());
+        break;
+      case MessageType::ServerSettings:
+        handleServerSettings(payload.data(), payload.size());
+        break;
+      case MessageType::Time:
+        handleTime(*base, payload.data(), payload.size());
+        break;
+      default:
+        break;
+    }
+  } catch (const std::bad_alloc&) {
+    BELL_LOG(warn, LOG_TAG, "allocation failed for a {}-byte message",
+             base->size);
+    return false;
   }
 
   sendTimeSync();

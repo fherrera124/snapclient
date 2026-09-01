@@ -18,3 +18,8 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../external/bell ${CMAKE_CURRENT_BI
 add_library(snapclient_core STATIC ${SOURCES})
 target_link_libraries(snapclient_core PUBLIC bell)
 target_include_directories(snapclient_core PUBLIC "include")
+
+option(SNAPCLIENT_CORE_BUILD_TESTS "Build snapclient_core unit tests" OFF)
+if(SNAPCLIENT_CORE_BUILD_TESTS)
+  add_subdirectory(tests)
+endif()

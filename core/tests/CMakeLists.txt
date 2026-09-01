@@ -1,0 +1,2 @@
+add_executable(sync_engine_test sync_engine_test.cpp)
+target_link_libraries(sync_engine_test PRIVATE snapclient_core)
