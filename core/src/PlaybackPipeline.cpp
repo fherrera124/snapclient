@@ -43,8 +43,10 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
   bufferMs_ = s.bufferMs;
   dacFixedLatencyMs_ = s.latencyMs;
 
-  if (bufferMs_ != lastSyncBufferMs_) {
+  if (bufferMs_ != lastSyncBufferMs_ ||
+      dacFixedLatencyMs_ != lastSyncDacLatencyMs_) {
     lastSyncBufferMs_ = bufferMs_;
+    lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
     sync_.onSettingsChanged(bufferMs_, static_cast<uint32_t>(sampleRate_));
   }
   dsp_.setVolume(static_cast<float>(s.volume) / 100.0f);
@@ -63,6 +65,7 @@ void PlaybackPipeline::onCodecReady(Codec /*codec*/,
   sampleRate_ = fmt.getSampleRate();
   audioSink_.configure(fmt.getSampleRateValue());
   lastSyncBufferMs_ = bufferMs_;
+  lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
   sync_.onSettingsChanged(bufferMs_, fmt.getSampleRateValue());
   // Queued chunks predate this codec header and would otherwise decode
   // against the *new* decoder instance setupDecode() just recreated in
@@ -190,11 +193,13 @@ void PlaybackPipeline::consumeOnce() {
       // Yield briefly so we don't starve other tasks
       std::this_thread::yield();
 
-      if (!sync_.isPlaying()) {
-        // Still resyncing after this drop - the rest of the backlog only
-        // gets staler evaluated one at a time in FIFO order, since real
-        // time keeps advancing while working through it. Jump straight
-        // to the newest chunk instead, on both queues.
+      if (!sync_.isPlaying() &&
+          queue_.size() > static_cast<size_t>(bufferMs_ / 20)) {
+        // Gated on an actual backlog: jumping to the newest chunk targets
+        // a play time ~bufferMs_ away, and waiting that out starves I2S's
+        // ~80ms DMA buffer badly enough to trigger the next hard resync
+        // itself. A healthy-depth queue's front chunk is already close
+        // to on-time.
         pcmQueue_.drainToNewest(1);
         queue_.drainToNewest(1);
       }

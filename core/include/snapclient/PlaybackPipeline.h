@@ -94,7 +94,11 @@ class PlaybackPipeline {
   // by the protocol) doesn't also force a resync - sync_.onSettingsChanged
   // drops playing_ back to the initial-sync state, which costs several
   // seconds to recover from and has nothing to do with volume.
+  // dacFixedLatencyMs_ needs the same tracking - it's baked into the same
+  // age formula as bufferMs_, so changing it mid-stream is just as
+  // disruptive.
   int32_t lastSyncBufferMs_ = 0;
+  int32_t lastSyncDacLatencyMs_ = 0;
 
   RateLimiter serverSettingsLogLimiter_;
   // A chunk dropped in onAudioChunk() never calls sync_.onFramesWritten(),
