@@ -192,17 +192,6 @@ void PlaybackPipeline::consumeOnce() {
     } else {
       // Yield briefly so we don't starve other tasks
       std::this_thread::yield();
-
-      if (!sync_.isPlaying() &&
-          queue_.size() > static_cast<size_t>(bufferMs_ / 20)) {
-        // Gated on an actual backlog: jumping to the newest chunk targets
-        // a play time ~bufferMs_ away, and waiting that out starves I2S's
-        // ~80ms DMA buffer badly enough to trigger the next hard resync
-        // itself. A healthy-depth queue's front chunk is already close
-        // to on-time.
-        pcmQueue_.drainToNewest(1);
-        queue_.drainToNewest(1);
-      }
     }
     break;
   }
