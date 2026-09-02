@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 #include <bell/Logger.h>
@@ -23,15 +24,13 @@ int64_t nowUs() {
 PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
                                    PrecisionWaiter& waiter, const char* logTag)
     : logTag_(logTag),
-      sync_(kQueueCapacity),
       audioSink_(audioSink),
       waiter_(waiter),
       queue_(kQueueCapacity),
       pcmQueue_(kPcmQueueCapacity),
-      decoder_(queue_, pcmQueue_, codecGeneration_, client),
+      decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_, sampleRateHz_),
       client_(client),
-      serverSettingsLogLimiter_(1'000'000),
-      queueDiagLogLimiter_(3'000'000) {}
+      serverSettingsLogLimiter_(1'000'000) {}
 
 void PlaybackPipeline::applyDspSettings(DspFlow flow,
                                         const DspFilterParams& params) {
@@ -50,6 +49,7 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
     lastSyncBufferMs_ = bufferMs_;
     lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
     sync_.onSettingsChanged(bufferMs_, static_cast<uint32_t>(sampleRate_));
+    applyQueueCapacity();
   }
   dsp_.setVolume(static_cast<float>(s.volume) / 100.0f);
   audioSink_.setMuted(s.muted);
@@ -65,10 +65,12 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
 void PlaybackPipeline::onCodecReady(Codec /*codec*/,
                                     const bell::audio::Format& fmt) {
   sampleRate_ = fmt.getSampleRate();
+  sampleRateHz_.store(fmt.getSampleRateValue(), std::memory_order_relaxed);
   audioSink_.configure(fmt.getSampleRateValue());
   lastSyncBufferMs_ = bufferMs_;
   lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
   sync_.onSettingsChanged(bufferMs_, fmt.getSampleRateValue());
+  applyQueueCapacity();
   // Queued chunks predate this codec header and would otherwise decode
   // against the *new* decoder instance setupDecode() just recreated in
   // SnapcastClient - bump codecGeneration first so DecoderTask can also
@@ -77,8 +79,23 @@ void PlaybackPipeline::onCodecReady(Codec /*codec*/,
   codecGeneration_.fetch_add(1, std::memory_order_relaxed);
   queue_.clear();
   pcmQueue_.clear();
+  pendingChunk_.reset();
   BELL_LOG(info, logTag_, "codec ready: {} Hz, {} ch", fmt.getSampleRateValue(),
            fmt.getNumChannels());
+}
+
+void PlaybackPipeline::applyQueueCapacity() {
+  const uint32_t sr = sampleRateHz_.load(std::memory_order_relaxed);
+  if (bufferMs_ <= 0 || sr == 0) {
+    return;
+  }
+  const double chunkDurationMs = kFramesPerChunk * 1000.0 / sr;
+  const size_t entries =
+      static_cast<size_t>(std::ceil(bufferMs_ / chunkDurationMs));
+  const size_t capacity = std::max<size_t>(entries, 1);
+  queue_.setCapacity(capacity);
+  BELL_LOG(info, logTag_, "queue capacity: {} chunks (bufferMs={} sr={})",
+           capacity, bufferMs_, sr);
 }
 
 void PlaybackPipeline::onTimeSample(int64_t offsetUs, int64_t maxErrorUs,
@@ -99,7 +116,7 @@ void PlaybackPipeline::onAudioChunk(Codec codec, const std::byte* payload,
   }
 
   const size_t effectiveQueueCeiling = std::min(
-      kQueueCapacity, kQueueMemoryBudgetBytes / std::max<size_t>(len, 1));
+      queue_.capacity(), kQueueMemoryBudgetBytes / std::max<size_t>(len, 1));
 
   if (queue_.size() >= effectiveQueueCeiling) {
     droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
@@ -119,17 +136,84 @@ void PlaybackPipeline::onAudioChunk(Codec codec, const std::byte* payload,
   }
 }
 
+size_t PlaybackPipeline::prepareForOutput(const std::byte* pcm, size_t len,
+                                         int frameAdjustment) {
+  const size_t frames = len / kBytesPerFrame;
+
+  // Resampled across the whole chunk, not a single-frame drop/duplicate at
+  // the edge, since the magnitude can now exceed one frame.
+  const size_t targetFrames =
+      static_cast<size_t>(static_cast<int>(frames) + frameAdjustment);
+  scratchResampled_.resize(targetFrames * 2);  // stereo
+  DynamicResampler::process(reinterpret_cast<const int16_t*>(pcm), frames,
+                            scratchResampled_.data(), targetFrames);
+  return targetFrames;
+}
+
+void PlaybackPipeline::lockOntoChunk(DecodedChunk firstItem, int64_t waitUs) {
+  waiter_.arm(waitUs);
+  audioSink_.disable();
+
+  size_t preloadedFrames = 0;
+  DecodedChunk item = std::move(firstItem);
+  size_t offsetFrames = 0;
+  for (;;) {
+    const size_t itemFrames = item.pcm.size() / kBytesPerFrame - offsetFrames;
+    const std::byte* src = item.pcm.data() + offsetFrames * kBytesPerFrame;
+    const size_t frames =
+        prepareForOutput(src, itemFrames * kBytesPerFrame, /*frameAdjustment=*/0);
+    const size_t requestedBytes = frames * kBytesPerFrame;
+    const size_t accepted = audioSink_.preload(
+        reinterpret_cast<const std::byte*>(scratchResampled_.data()),
+        requestedBytes);
+    const size_t acceptedFrames = accepted / kBytesPerFrame;
+    preloadedFrames += acceptedFrames;
+
+    if (accepted < requestedBytes) {
+      // Output filled up mid-chunk - keep the exact unaccepted remainder
+      // for consumeOnce() to finish normally next, instead of dropping it.
+      if (acceptedFrames < itemFrames) {
+        pendingChunk_ =
+            PendingChunk{std::move(item), offsetFrames + acceptedFrames};
+      }
+      break;
+    }
+    if (!pcmQueue_.tryPop(item, 2000)) {
+      break;  // nothing more decoded yet - wait out the rest of the alarm
+    }
+    offsetFrames = 0;
+  }
+
+  waiter_.block();
+  audioSink_.enable();
+  sync_.lockWithPreloadedFrames(preloadedFrames, nowUs());
+  BELL_LOG(info, logTag_, "locked: preloaded {} frames, waited {}us",
+           preloadedFrames, waitUs);
+}
+
 void PlaybackPipeline::consumeOnce() {
   // Applied here, not in onAudioChunk() - see droppedChunkFrames_'s comment.
-  const size_t droppedFrames =
-      droppedChunkFrames_.exchange(0, std::memory_order_relaxed);
-  if (droppedFrames > 0 && sync_.isPlaying()) {
-    sync_.onFramesWritten(droppedFrames);
+  // Only consumed (reset) while playing - onAudioChunk() keeps running on
+  // its own thread during a resync search, so drops from that window must
+  // stay accounted for until there's a sync_ to actually apply them to,
+  // rather than being reset and lost.
+  if (sync_.isPlaying()) {
+    const size_t droppedFrames =
+        droppedChunkFrames_.exchange(0, std::memory_order_relaxed);
+    if (droppedFrames > 0) {
+      sync_.onFramesWritten(droppedFrames);
+    }
   }
 
   DecodedChunk item;
+  size_t offsetFrames = 0;
   size_t queueDepth = 0;
-  if (pcmQueue_.tryPop(item, 10)) {
+  if (pendingChunk_) {
+    item = std::move(pendingChunk_->chunk);
+    offsetFrames = pendingChunk_->framesConsumed;
+    pendingChunk_.reset();
+    queueDepth = queue_.size() + pcmQueue_.size() + 1;
+  } else if (pcmQueue_.tryPop(item, 10)) {
     queueDepth = queue_.size() + pcmQueue_.size() + 1;
   }
   if (queueDepth == 0) {
@@ -138,108 +222,50 @@ void PlaybackPipeline::consumeOnce() {
     return;
   }
 
-  const std::byte* dspInput = item.pcm.data();
-  size_t dspInputLen = item.pcm.size();
-  size_t frames = dspInputLen / kBytesPerFrame;
-  scratch_.resize(dspInputLen / sizeof(int16_t));
-  dsp_.process(dspInput, dspInputLen, reinterpret_cast<std::byte*>(scratch_.data()),
-              scratch_.size() * sizeof(int16_t), sampleRate_);
+  // A resumed PendingChunk's timestamp/PCM start partway through the
+  // original chunk - offsetFrames is 0 for a freshly popped item, making
+  // both of these a no-op slice.
+  const int64_t itemServerTimeUs =
+      item.serverTimeUs +
+      static_cast<int64_t>(offsetFrames) * 1'000'000LL /
+          sampleRateHz_.load(std::memory_order_relaxed);
+  const std::byte* pcm = item.pcm.data() + offsetFrames * kBytesPerFrame;
+  const size_t pcmLen = item.pcm.size() - offsetFrames * kBytesPerFrame;
 
+  // Only the fixed per-client latency feeds evaluate() - SyncEngine's
+  // actual-side clock never subtracts DMA ring occupancy, so folding a
+  // ring-occupancy estimate in here would bias age instead of cancelling
+  // out.
   const int32_t dacLatencyUs = static_cast<int32_t>(dacFixedLatencyMs_) * 1000;
 
-  // Captured once before the retry loop below, not per-iteration:
-  // WaitMore re-evaluates the same not-yet-playing chunk without ever
-  // flipping playing_, so isPlaying() can't change mid-loop.
-  const bool wasPlayingBeforeEval = sync_.isPlaying();
+  auto result =
+      sync_.evaluate(itemServerTimeUs, nowUs(), queueDepth, dacLatencyUs);
 
-  for (;;) {
-    const int64_t evalStartUs = nowUs();
-    auto result = sync_.evaluate(item.serverTimeUs, evalStartUs, queueDepth,
-                                 dacLatencyUs);
-
-    if (result.decision == PlayDecision::WaitMore) {
-      waiter_.waitUs(result.waitUs);
-      continue;
-    }
-    if (result.decision == PlayDecision::Play) {
-      // frameAdjustment is already scaled - see
-      // SyncEngine::scaleFrameAdjustment(). Resampled across the whole
-      // chunk, not a single-frame drop/duplicate at the edge, since the
-      // magnitude can now exceed one frame.
-      const size_t targetFrames = static_cast<size_t>(
-          static_cast<int>(frames) + result.frameAdjustment);
-      scratchResampled_.resize(targetFrames * 2);  // stereo
-      DynamicResampler::process(reinterpret_cast<const int16_t*>(scratch_.data()),
-                                frames, scratchResampled_.data(), targetFrames);
-
-      audioSink_.write(reinterpret_cast<const std::byte*>(scratchResampled_.data()),
-                       targetFrames * kBytesPerFrame);
-
-      // Tell SyncEngine the actual frames just written
-      sync_.onFramesWritten(targetFrames);
-
-      // Underruns advance the DAC's clock without a matching write() -
-      // feed that into SyncEngine too. Only while already playing: a
-      // resync's own search leaves the DMA idle on purpose, that's not
-      // lost time.
-      const uint32_t underrunFrames = audioSink_.underrunCompensationFrames();
-      if (wasPlayingBeforeEval) {
-        const uint32_t underrunDelta =
-            underrunFrames - lastUnderrunCompensationFrames_;
-        if (underrunDelta > 0) {
-          sync_.onFramesWritten(underrunDelta);
-        }
-      }
-      lastUnderrunCompensationFrames_ = underrunFrames;
-    } else {
-      // Yield briefly so we don't starve other tasks
-      std::this_thread::yield();
-    }
-    break;
+  if (result.decision == PlayDecision::WaitMore) {
+    lockOntoChunk(std::move(item), result.waitUs);
+    return;
   }
 
-  // Frame-level correction can't shrink queue.size() by a whole chunk, so
-  // backlog that never trips a hard resync otherwise never drains.
-  // Compensates via onFramesWritten(), same as underrun does above.
-  if (wasPlayingBeforeEval) {
-    const int64_t queueExcessCheckNowUs = nowUs();
-    const size_t targetQueue = static_cast<size_t>(bufferMs_ / 20);
-    // Below ~220ms bufferMs, targetQueue-8 would underflow - disable
-    // rather than let a wrapped size_t make the check silently inert.
-    if (targetQueue > 11) {
-      const size_t healthyQueueTarget = targetQueue - 8;
-      const size_t queueExcessThreshold = healthyQueueTarget + 3;
-      const size_t rawQueueSize = queue_.size();
-      if (queueDiagLogLimiter_.due(queueExcessCheckNowUs)) {
-        BELL_LOG(info, logTag_,
-                 "DIAG queue depth: raw={} pcm={} healthyTarget={} "
-                 "excessThreshold={}",
-                 rawQueueSize, pcmQueue_.size(), healthyQueueTarget,
-                 queueExcessThreshold);
-      }
-      if (rawQueueSize > queueExcessThreshold) {
-        if (queueExcessSinceUs_ == 0) {
-          queueExcessSinceUs_ = queueExcessCheckNowUs;
-        } else if (queueExcessCheckNowUs - queueExcessSinceUs_ >=
-                  kQueueExcessSustainedUs) {
-          const size_t dropped = queue_.drainToNewest(healthyQueueTarget);
-          if (dropped > 0) {
-            sync_.onFramesWritten(dropped * kFramesPerChunk);
-            BELL_LOG(warn, logTag_,
-                     "queue excess: raw queue {} -> {} (dropped {} chunks, "
-                     "compensated {} frames)",
-                     rawQueueSize, healthyQueueTarget, dropped,
-                     dropped * kFramesPerChunk);
-          }
-          queueExcessSinceUs_ = 0;
-        }
-      } else {
-        queueExcessSinceUs_ = 0;
+  if (result.decision == PlayDecision::Play) {
+    const size_t targetFrames =
+        prepareForOutput(pcm, pcmLen, result.frameAdjustment);
+    audioSink_.write(reinterpret_cast<const std::byte*>(scratchResampled_.data()),
+                     targetFrames * kBytesPerFrame);
+
+    // Tell SyncEngine the actual frames just written
+    sync_.onFramesWritten(targetFrames);
+  } else {
+    // DropLate. During the initial-sync search, chunksToSkip more queued
+    // chunks are already stale too - drop them all now in one pass. 0
+    // for the hard-resync DropLate cases (queue starvation, threshold
+    // exceeded).
+    DecodedChunk discard;
+    for (int i = 0; i < result.chunksToSkip; i++) {
+      if (!pcmQueue_.tryPop(discard, 1)) {
+        break;
       }
     }
-  } else {
-    // Explicit reset - a resync's own drain already clears this anyway.
-    queueExcessSinceUs_ = 0;
+    std::this_thread::yield();
   }
 }
 

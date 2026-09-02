@@ -17,8 +17,10 @@ class GptimerWaiter : public PrecisionWaiter {
   GptimerWaiter(const GptimerWaiter&) = delete;
   GptimerWaiter& operator=(const GptimerWaiter&) = delete;
 
-  // No-op (returns immediately) if construction failed to obtain a timer.
-  void waitUs(int64_t waitUs) override;
+  // No-op (block() returns immediately) if construction failed to obtain a
+  // timer.
+  void arm(int64_t waitUs) override;
+  void block() override;
 
  private:
   static bool IRAM_ATTR onAlarm(gptimer_handle_t timer,
@@ -27,6 +29,9 @@ class GptimerWaiter : public PrecisionWaiter {
 
   gptimer_handle_t timer_ = nullptr;
   const TaskHandle_t taskHandle_;
+  // False when arm() was a no-op (waitUs<=0 or no timer) - guards block()
+  // against waiting forever on an alarm that was never started.
+  bool pendingAlarm_ = false;
 };
 
 }  // namespace snapclient

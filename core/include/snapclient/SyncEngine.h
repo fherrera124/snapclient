@@ -14,13 +14,17 @@ struct SyncResult {
   PlayDecision decision = PlayDecision::WaitMore;
   int64_t waitUs = 0;
   // Negative skips |frameAdjustment| frames (catch up), positive duplicates
-  // that many (slow down), 0 = none. Magnitude set by scaleFrameAdjustment().
+  // that many (slow down), 0 = none.
   int frameAdjustment = 0;
   bool hardResync = false;
   // Meaningful only when decision == Play, past the first chunk of a
   // resync. Set to evaluate()'s own values so callers don't recompute them.
   int64_t ageUs = 0;
   int64_t diffToServerUs = 0;
+  // Meaningful only when decision == DropLate and !hardResync (the
+  // initial-sync catch-up case) - how many more queued chunks are also
+  // already stale and should be discarded before evaluating again.
+  int chunksToSkip = 0;
 };
 
 // Decides when a chunk should play and by how much to nudge playback to
@@ -28,9 +32,7 @@ struct SyncResult {
 // the actual audio output and reports back how many frames it wrote.
 class SyncEngine {
  public:
-  // Ceiling on queueDepth ever passed to evaluate() - keeps
-  // scaleFrameAdjustment()'s queue thresholds within what's reachable.
-  explicit SyncEngine(size_t queueCapacity);
+  SyncEngine();
 
   void onSettingsChanged(int32_t bufferMs, uint32_t sampleRate);
 
@@ -54,6 +56,13 @@ class SyncEngine {
   // frameCount=0), so the virtual playback clock stays accurate.
   void onFramesWritten(size_t frameCount);
 
+  // Call once, after independently handling a WaitMore decision (arming a
+  // precise wait, preloading real audio into the output, blocking for it,
+  // then enabling output) - preloadedFrames is exactly how much of that
+  // audio actually reached the output, becoming the starting point for the
+  // virtual playback clock instead of 0.
+  void lockWithPreloadedFrames(size_t preloadedFrames, int64_t nowUs);
+
   void reset();
 
   // True once evaluate() has found a chunk to start from and hasn't since
@@ -62,40 +71,25 @@ class SyncEngine {
 
  private:
   static constexpr uint32_t kLatencyFilterFull = 29;
-  static constexpr int64_t kHardResyncThresholdUs = 10000;
+  static constexpr int64_t kHardResyncThresholdUs = 2000;
   static constexpr int64_t kShortOffsetUs = 128;
   static constexpr int64_t kMiniOffsetUs = 64;
-  // Must stay wide enough to tolerate DSP processing running inline in
-  // this per-chunk path before evaluate() samples nowUs(), on top of
-  // ordinary network/scheduling jitter.
-  static constexpr int64_t kInitialSyncLateToleranceUs = 20000;
 
   // -1 catches up, +1 slows down, 0 if the three signals disagree or the
-  // medians aren't full. Fixed magnitude - see scaleFrameAdjustment().
+  // medians aren't full. Fixed magnitude.
   int steadyStateFrameAdjustment(int64_t shortM, int64_t miniM,
                                  int64_t age) const;
-
-  // Scales steadyStateFrameAdjustment()'s fixed ±1 by drift size, and
-  // separately forces a drain when queueDepth grows even if age sees
-  // nothing wrong. The two signals only escalate each other, never
-  // shrink one another.
-  int scaleFrameAdjustment(int frameAdjustment, int64_t age,
-                           size_t queueDepth) const;
 
   TimeFilter timeFilter_;
   SlidingMedian<int64_t> shortMedian_;
   SlidingMedian<int64_t> miniMedian_;
 
-  const size_t queueCapacity_;
   int32_t bufferMs_ = 0;
   uint32_t sampleRate_ = 44100;
 
   bool playing_ = false;
   int64_t playbackStartTimeUs_ = 0;
   int64_t samplesWritten_ = 0;
-
-  int64_t lastInitialSyncDropLogUs_ = 0;
-  size_t initialSyncDropCount_ = 0;
 };
 
 }  // namespace snapclient

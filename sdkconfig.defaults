@@ -15,3 +15,8 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # sitting at max frequency always. Not automatic light sleep - see
 # main.cpp's esp_pm_configure() call for why.
 CONFIG_PM_ENABLE=y
+
+# Least-sensitive brownout trigger level - a higher one trips on the WiFi
+# radio's normal power-up current draw.
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_0=y
+CONFIG_ESP_BROWNOUT_DET_LVL=0

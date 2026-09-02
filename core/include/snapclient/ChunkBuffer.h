@@ -16,6 +16,7 @@ class ChunkBuffer {
   ~ChunkBuffer();
 
   const std::byte* data() const { return data_; }
+  std::byte* data() { return data_; }
   size_t size() const { return size_; }
   // False only for a chunk acquireChunkBuffer() couldn't get memory for -
   // a genuinely empty (0-byte) chunk is still true.

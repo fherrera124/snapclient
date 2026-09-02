@@ -1,10 +1,11 @@
 #include "snapclient/SyncEngine.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
 #include <bell/Logger.h>
+
+#include "snapclient/DecoderTask.h"
 
 namespace snapclient {
 
@@ -12,11 +13,10 @@ namespace {
 const char* kLogTag = "SyncEngine";
 }  // namespace
 
-SyncEngine::SyncEngine(size_t queueCapacity)
+SyncEngine::SyncEngine()
     : timeFilter_(0.01, 0.0, 1.001, 0.75, 100, 2.0),
       shortMedian_(99),
-      miniMedian_(19),
-      queueCapacity_(queueCapacity) {}
+      miniMedian_(19) {}
 
 void SyncEngine::onSettingsChanged(int32_t bufferMs, uint32_t sampleRate) {
   bufferMs_ = bufferMs;
@@ -54,28 +54,23 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
     if (age < 0) {
       return {PlayDecision::WaitMore, -age, 0, false};
     }
-    if (age > kInitialSyncLateToleranceUs) {
-      // A backlog of these can be long enough that logging every one of
-      // them (blocking UART write, unlike the aggregate log below) makes
-      // draining it itself slower than chunks keep arriving, so the
-      // backlog never shrinks.
-      initialSyncDropCount_++;
-      if (nowUs - lastInitialSyncDropLogUs_ >= 1000000) {
-        lastInitialSyncDropLogUs_ = nowUs;
-        BELL_LOG(warn, kLogTag,
-                 "initial sync drop x{}: age={} diffToServer={} bufferUs={} "
-                 "dacLatencyUs={}",
-                 initialSyncDropCount_, age, diffToServer, bufferUs,
-                 dacLatencyUs);
-        initialSyncDropCount_ = 0;
-      }
-      return {PlayDecision::DropLate, 0, 0, false};
-    }
-    playbackStartTimeUs_ = nowUs;
-    samplesWritten_ = 0;
-    playing_ = true;
-    BELL_LOG(info, kLogTag, "initial sync locked: age={}us", age);
-    return {PlayDecision::Play, 0, 0, false};
+    // Already due or late - drop and keep searching (no grace window;
+    // lockWithPreloadedFrames() is the only way playing_ becomes true).
+    // Chunks arrive at a steady cadence, so however many chunk durations
+    // we're behind by are also already stale - skip them all in one
+    // pass.
+    const int64_t chunkDurationUs =
+        static_cast<int64_t>(kFramesPerChunk) * 1'000'000 / sampleRate_;
+    const int chunksToSkip =
+        static_cast<int>((age + chunkDurationUs - 1) / chunkDurationUs);
+    BELL_LOG(warn, kLogTag,
+             "initial sync: age={} diffToServer={} bufferUs={} "
+             "dacLatencyUs={} skipping {} more",
+             age, diffToServer, bufferUs, dacLatencyUs, chunksToSkip);
+    SyncResult result;
+    result.decision = PlayDecision::DropLate;
+    result.chunksToSkip = chunksToSkip;
+    return result;
   }
 
   if (queueDepth == 0) {
@@ -111,13 +106,19 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
     frameAdjustment = steadyStateFrameAdjustment(
         shortMedian_.median(), miniMedian_.median(), age);
   }
-  frameAdjustment = scaleFrameAdjustment(frameAdjustment, age, queueDepth);
 
   return {PlayDecision::Play, 0, frameAdjustment, false, age, diffToServer};
 }
 
 void SyncEngine::onFramesWritten(size_t frameCount) {
   samplesWritten_ += static_cast<int64_t>(frameCount);
+}
+
+void SyncEngine::lockWithPreloadedFrames(size_t preloadedFrames,
+                                         int64_t nowUs) {
+  playbackStartTimeUs_ = nowUs;
+  samplesWritten_ = static_cast<int64_t>(preloadedFrames);
+  playing_ = true;
 }
 
 int SyncEngine::steadyStateFrameAdjustment(int64_t shortM, int64_t miniM,
@@ -132,41 +133,6 @@ int SyncEngine::steadyStateFrameAdjustment(int64_t shortM, int64_t miniM,
     return -1;
   }
   return 0;
-}
-
-int SyncEngine::scaleFrameAdjustment(int frameAdjustment, int64_t age,
-                                     size_t queueDepth) const {
-  if (frameAdjustment != 0) {
-    // Scale the ±1 nudge by how far off we are. Tiers checked
-    // widest-first, so only one applies.
-    struct { int64_t ageUs; int factor; } kAmplifyTiers[] = {
-        {12000, 6}, {8000, 4}, {4000, 2}};
-    const int64_t absAge = std::abs(age);
-    for (const auto& tier : kAmplifyTiers) {
-      if (absAge > tier.ageUs) {
-        frameAdjustment *= tier.factor;
-        break;
-      }
-    }
-  }
-
-  // Skipped when already slowing down (frameAdjustment > 0), since
-  // draining would fight that direction.
-  if (frameAdjustment <= 0) {
-    const size_t targetQueue = static_cast<size_t>(bufferMs_ / 20);
-    struct { size_t margin; size_t capMargin; int adjust; } kQueueTiers[] = {
-        {11, 2, -4}, {8, 4, -3}, {5, 6, -2}};
-    for (const auto& tier : kQueueTiers) {
-      const size_t threshold = std::min(targetQueue + tier.margin,
-                                        queueCapacity_ - tier.capMargin);
-      if (queueDepth > threshold) {
-        // min(): keep whichever correction is larger.
-        frameAdjustment = std::min(frameAdjustment, tier.adjust);
-        break;
-      }
-    }
-  }
-  return frameAdjustment;
 }
 
 }  // namespace snapclient

@@ -95,16 +95,6 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
     return;
   }
 
-  // Must be registered before i2s_channel_enable() - the driver only
-  // accepts callback registration while the channel is REGISTERED/READY.
-  i2s_event_callbacks_t callbacks = {};
-  callbacks.on_send_q_ovf = &AudioSinkI2S::onSendQueueOverflow;
-  err = i2s_channel_register_event_callback(txChan_, &callbacks, this);
-  if (err != ESP_OK) {
-    BELL_LOG(error, LOG_TAG, "i2s_channel_register_event_callback failed: {}",
-             static_cast<int>(err));
-  }
-
   err = i2s_channel_enable(txChan_);
   if (err != ESP_OK) {
     BELL_LOG(error, LOG_TAG, "i2s_channel_enable failed: {}",
@@ -158,21 +148,30 @@ void AudioSinkI2S::setMuted(bool muted) {
   gpio_set_level(config_.mutePin, muted ? 0 : 1);
 }
 
-uint32_t AudioSinkI2S::sendQueueOverflowCount() const {
-  return sendQueueOverflowCount_.load(std::memory_order_relaxed);
+size_t AudioSinkI2S::preload(const std::byte* pcm, size_t len) {
+  if (txChan_ == nullptr) {
+    return 0;
+  }
+  size_t bytesLoaded = 0;
+  esp_err_t err = i2s_channel_preload_data(txChan_, pcm, len, &bytesLoaded);
+  if (err != ESP_OK) {
+    BELL_LOG(warn, LOG_TAG, "i2s_channel_preload_data failed: {}",
+             static_cast<int>(err));
+    return 0;
+  }
+  return bytesLoaded;
 }
 
-uint32_t AudioSinkI2S::underrunCompensationFrames() const {
-  return sendQueueOverflowCount_.load(std::memory_order_relaxed) *
-         static_cast<uint32_t>(kDmaFrameNum);
+void AudioSinkI2S::disable() {
+  if (txChan_ != nullptr) {
+    i2s_channel_disable(txChan_);
+  }
 }
 
-bool AudioSinkI2S::onSendQueueOverflow(i2s_chan_handle_t /*handle*/,
-                                       i2s_event_data_t* /*event*/,
-                                       void* userCtx) {
-  static_cast<AudioSinkI2S*>(userCtx)
-      ->sendQueueOverflowCount_.fetch_add(1, std::memory_order_relaxed);
-  return false;
+void AudioSinkI2S::enable() {
+  if (txChan_ != nullptr) {
+    i2s_channel_enable(txChan_);
+  }
 }
 
 }  // namespace snapclient

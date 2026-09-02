@@ -40,8 +40,9 @@ GptimerWaiter::~GptimerWaiter() {
   }
 }
 
-void GptimerWaiter::waitUs(int64_t waitUs) {
+void GptimerWaiter::arm(int64_t waitUs) {
   if (waitUs <= 0 || timer_ == nullptr) {
+    pendingAlarm_ = false;
     return;
   }
 
@@ -54,11 +55,17 @@ void GptimerWaiter::waitUs(int64_t waitUs) {
   };
   ESP_ERROR_CHECK(gptimer_set_alarm_action(timer_, &alarmConfig));
   ESP_ERROR_CHECK(gptimer_start(timer_));
+  pendingAlarm_ = true;
+}
 
+void GptimerWaiter::block() {
+  if (!pendingAlarm_) {
+    return;
+  }
   xTaskNotifyWait(0, 0, nullptr, portMAX_DELAY);
-
   ESP_ERROR_CHECK(gptimer_stop(timer_));
   ESP_ERROR_CHECK(gptimer_disable(timer_));
+  pendingAlarm_ = false;
 }
 
 // IRAM_ATTR: the driver may invoke this while flash cache is disabled, so

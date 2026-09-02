@@ -25,13 +25,23 @@ const std::vector<int16_t> kSilenceChunk(kFramesPerChunk * 2, 0);
 DecoderTask::DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
                          BoundedQueue<DecodedChunk>& pcmQueue,
                          std::atomic<uint32_t>& codecGeneration,
-                         SnapcastClient& client)
-    : bell::Task("decoder", 16 * 1024, /*espPriority=*/4,
+                         SnapcastClient& client, DspProcessor& dsp,
+                         std::atomic<uint32_t>& sampleRateHz)
+    // Above SnapcastClient's priority (4) - pcmQueue_'s 2-slot margin is
+    // far thinner than queue_'s (tens of chunks), so decode losing the CPU
+    // race matters more than network receive doing so. CoreAny, not pinned
+    // to the consumer's Core1 - if the consumer ever spins in a tight loop
+    // (e.g. a resync storm), a same-core lower-priority task never gets to
+    // run at all, starving decode entirely and making the storm
+    // self-sustaining.
+    : bell::Task("decoder", 16 * 1024, /*espPriority=*/10,
                 bell::TaskCore::CoreAny, /*espStackOnPsram=*/false),
       rawQueue_(rawQueue),
       pcmQueue_(pcmQueue),
       codecGeneration_(codecGeneration),
-      client_(client) {
+      client_(client),
+      dsp_(dsp),
+      sampleRateHz_(sampleRateHz) {
   startTask();
 }
 
@@ -87,6 +97,10 @@ void DecoderTask::runTask() {
     if (item.codecGen != codecGeneration_.load(std::memory_order_relaxed)) {
       continue;
     }
+
+    const auto sampleRate = static_cast<bell::audio::SampleRate>(
+        sampleRateHz_.load(std::memory_order_relaxed));
+    dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(), sampleRate);
 
     pcmQueue_.push(DecodedChunk{item.serverTimeUs, std::move(pcm)});
   }

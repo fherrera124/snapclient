@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -43,14 +42,9 @@ class AudioSinkI2S : public snapclient::AudioSink {
   // No-op if Config::mutePin is GPIO_NUM_NC.
   void setMuted(bool muted) override;
 
-  // Cumulative count of DMA-underrun events (a zeroed buffer sent instead
-  // of fresh data). ISR-incremented, safe to read from any task.
-  uint32_t sendQueueOverflowCount() const override;
-
-  // sendQueueOverflowCount() in frames: each event is exactly one
-  // descriptor's worth (kDmaFrameNum), since the driver fires it once per
-  // completed descriptor while the queue stays starved.
-  uint32_t underrunCompensationFrames() const override;
+  size_t preload(const std::byte* pcm, size_t len) override;
+  void disable() override;
+  void enable() override;
 
  private:
   const char* LOG_TAG = "AudioSinkI2S";
@@ -58,12 +52,9 @@ class AudioSinkI2S : public snapclient::AudioSink {
   Config config_;
   i2s_chan_handle_t txChan_ = nullptr;
   uint32_t currentSampleRate_ = 0;
-  std::atomic<uint32_t> sendQueueOverflowCount_{0};
 
   void teardownChannel();
   void primeSilence();
-  static bool onSendQueueOverflow(i2s_chan_handle_t handle,
-                                  i2s_event_data_t* event, void* userCtx);
 };
 
 }  // namespace snapclient

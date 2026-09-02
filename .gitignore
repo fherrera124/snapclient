@@ -1,9 +1,13 @@
 build
+build-host
 libopus
 managed_components
 sdkconfig
 sdkconfig.old
 dependencies.lock
+.vscode/
+*.code-workspace
+soak.log
 
 # Created by https://www.toptal.com/developers/gitignore/api/c,c++,eclipse
 # Edit at https://www.toptal.com/developers/gitignore?templates=c,c++,eclipse

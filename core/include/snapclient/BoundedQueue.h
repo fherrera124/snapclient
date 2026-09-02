@@ -11,10 +11,11 @@
 namespace snapclient {
 
 // Thread-safe bounded FIFO. One mutex plus two semaphores (items
-// available, free slots) guard a fixed-capacity std::deque - every
-// public method is a self-contained critical section that never calls
-// into another BoundedQueue, so instances never need lock-ordering
-// discipline against each other.
+// available, free slots) guard a std::deque capped at a capacity that's
+// adjustable at runtime via setCapacity() - every public method is a
+// self-contained critical section that never calls into another
+// BoundedQueue, so instances never need lock-ordering discipline against
+// each other.
 template <typename T>
 class BoundedQueue {
  public:
@@ -53,13 +54,41 @@ class BoundedQueue {
         return true;
       }
     }
-    itemAvailable_.take(timeoutMs);
-    return false;
+    if (!itemAvailable_.take(timeoutMs)) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (deque_.empty()) {
+      return false;
+    }
+    out = std::move(deque_.front());
+    deque_.pop_front();
+    freeSlots_.give();
+    return true;
   }
 
   size_t size() {
     std::lock_guard<std::mutex> lock(mutex_);
     return deque_.size();
+  }
+
+  size_t capacity() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return capacity_;
+  }
+
+  // Only meant for a tryPush()/tryPop() producer/consumer pair: freeSlots_
+  // only grows here, never shrinks, so a push()-blocking producer could
+  // still overfill briefly right after a decrease, until enough items
+  // drain to bring the semaphore back in line.
+  void setCapacity(size_t newCapacity) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (newCapacity > capacity_) {
+      for (size_t i = capacity_; i < newCapacity; i++) {
+        freeSlots_.give();
+      }
+    }
+    capacity_ = newCapacity;
   }
 
   void clear() {
@@ -68,19 +97,6 @@ class BoundedQueue {
       freeSlots_.give();
     }
     deque_.clear();
-  }
-
-  // Drops every item except the newest `keep` ("jump to newest" resync
-  // trim). Returns how many were dropped, for the caller's own counters.
-  size_t drainToNewest(size_t keep) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    size_t dropped = 0;
-    while (deque_.size() > keep) {
-      deque_.pop_front();
-      freeSlots_.give();
-      dropped++;
-    }
-    return dropped;
   }
 
  private:
@@ -92,7 +108,7 @@ class BoundedQueue {
     }
   }
 
-  const size_t capacity_;
+  size_t capacity_;
   std::mutex mutex_;
   std::deque<T> deque_;
   bell::Semaphore itemAvailable_;

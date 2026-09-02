@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include <bell/audio/Common.h>
@@ -55,24 +56,45 @@ class PlaybackPipeline {
   void consumeOnce();
 
  private:
-  // Bounds the network-to-playback queue. A chunk acquireChunkBuffer()
-  // couldn't get memory for still carries useful timing (it falls back to
-  // the accounted-silence path in onAudioChunk below) - high enough to
-  // absorb ordinary network jitter without starving the queue into
-  // unaccounted drops.
+  // A chunk only partially accepted by AudioSink::preload() before the
+  // output filled up - picked back up, from the exact frame it stopped
+  // at, as the next item once regular Play resumes.
+  struct PendingChunk {
+    DecodedChunk chunk;
+    size_t framesConsumed = 0;
+  };
+
+  // Runs DynamicResampler on pcm[0..len) into scratchResampled_, returns
+  // the resulting frame count. pcm is already dsp-processed by DecoderTask
+  // before it ever reaches here.
+  size_t prepareForOutput(const std::byte* pcm, size_t len,
+                          int frameAdjustment);
+
+  // Preloads real upcoming audio into the (disabled) output during the
+  // wait, so real content is already queued the instant output resumes
+  // instead of starting from empty silence.
+  void lockOntoChunk(DecodedChunk firstItem, int64_t waitUs);
+
+  // Resizes queue_ to approximately bufferMs_ worth of chunks - a
+  // capacity close to that target leaves little headroom for ordinary
+  // network jitter as bufferMs_ grows. No-op until both bufferMs_ and
+  // sampleRateHz_ are known.
+  void applyQueueCapacity();
+
+  // queue_'s capacity before real settings arrive - see
+  // applyQueueCapacity(). A chunk acquireChunkBuffer() couldn't get memory
+  // for still carries useful timing (it falls back to the
+  // accounted-silence path in onAudioChunk below).
   static constexpr size_t kQueueCapacity = 40;
   // A count-based cap alone assumes Opus-sized chunks (RFC 6716 caps a
-  // frame at 1275B) - a board with no PSRAM can't hold kQueueCapacity
-  // chunks of uncompressed Pcm (3840B each) in internal heap.
+  // frame at 1275B) - a board with no PSRAM can't hold many chunks of
+  // uncompressed Pcm (3840B each) in internal heap.
   static constexpr size_t kQueueMemoryBudgetBytes = 16 * 1024;
   // Decode (~12ms avg) is slower than dsp+i2s-write (~6.5-7.5ms combined),
   // so 2 slots is enough for one-chunk-ahead overlap between DecoderTask
   // and the consumer; bump if soak testing shows the consumer stalling
   // here waiting on decode.
   static constexpr size_t kPcmQueueCapacity = 2;
-  // Longer than shortMedian_'s ~2s window, so one drain's outliers
-  // clear it before the next drain's debounce could complete.
-  static constexpr int64_t kQueueExcessSustainedUs = 3'000'000;  // 3s
 
   const char* logTag_;
 
@@ -83,6 +105,9 @@ class PlaybackPipeline {
   BoundedQueue<QueuedChunk> queue_;
   BoundedQueue<DecodedChunk> pcmQueue_;
   std::atomic<uint32_t> codecGeneration_{0};
+  // Raw Hz value of sampleRate_ below - shared with DecoderTask (which
+  // dsp-processes chunks on its own thread) since it needs it too.
+  std::atomic<uint32_t> sampleRateHz_{44100};
   DecoderTask decoder_;
   SnapcastClient& client_;
 
@@ -103,18 +128,13 @@ class PlaybackPipeline {
   int32_t lastSyncDacLatencyMs_ = 0;
 
   RateLimiter serverSettingsLogLimiter_;
-  // TEMP DIAG: remove once the queue-depth-vs-web-client-lead investigation
-  // is done.
-  RateLimiter queueDiagLogLimiter_;
   // A chunk dropped in onAudioChunk() never calls sync_.onFramesWritten(),
   // so sync_'s clock would fall behind real elapsed server-time - deferred
   // here since onAudioChunk() runs on a different thread than sync_'s.
   std::atomic<size_t> droppedChunkFrames_{0};
 
-  std::vector<int16_t> scratch_;
   std::vector<int16_t> scratchResampled_;
-  int64_t queueExcessSinceUs_ = 0;
-  uint32_t lastUnderrunCompensationFrames_ = 0;
+  std::optional<PendingChunk> pendingChunk_;
 };
 
 }  // namespace snapclient
