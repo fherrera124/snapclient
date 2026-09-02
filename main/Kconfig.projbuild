@@ -18,27 +18,39 @@ menu "Snapclient Configuration"
         int "I2S MCLK GPIO (-1 if unused)"
         default 0
         help
-            PCM5102A has its own internal PLL and doesn't strictly need
-            MCLK, but driving it is harmless.
+            A DAC with its own internal PLL doesn't strictly need MCLK,
+            but driving it is harmless.
 
     config SNAPCLIENT_I2S_MUTE_GPIO
-        int "PCM5102A XSMT mute GPIO (-1 if unused)"
+        int "DAC mute GPIO (-1 if unused)"
         default -1
         help
-            Only needed if XSMT is wired to a GPIO rather than tied via an
-            onboard pull-up (common on cheap breakout boards, in which
-            case leave this at -1).
+            Only needed if the DAC's mute pin is wired to a GPIO rather
+            than tied via an onboard pull-up/pull-down (common on cheap
+            breakout boards, in which case leave this at -1).
 
-    config SNAPCLIENT_SERVER_HOST
+    config SNAPSERVER_HOST
         string "Snapserver host"
         default "192.168.1.1"
 
-    config SNAPCLIENT_SERVER_PORT
+    config SNAPSERVER_PORT
         int "Snapserver port"
         default 1704
 
-    config SNAPCLIENT_CONTROL_PORT
-        int "Control server (settings HTTP API) port"
-        default 8080
+    config SNAPCLIENT_WEB_PORT
+        int "Web server (settings UI + HTTP API) port"
+        default 80
+
+    config SNAPCLIENT_DAC_I2C_SDA_GPIO
+        int "DAC I2C SDA GPIO (-1 if unused)"
+        default -1
+
+    config SNAPCLIENT_DAC_I2C_SCL_GPIO
+        int "DAC I2C SCL GPIO (-1 if unused)"
+        default -1
+
+    config SNAPCLIENT_DAC_I2C_ADDR
+        hex "DAC I2C address"
+        default 0x2D
 
 endmenu

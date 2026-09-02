@@ -99,7 +99,7 @@ class SnapclientTask : public bell::Task {
       applyUdpLogSettings();
     };
 
-    auto controlListenRes = control.listen(CONFIG_SNAPCLIENT_CONTROL_PORT);
+    auto controlListenRes = control.listen(CONFIG_SNAPCLIENT_WEB_PORT);
     if (!controlListenRes) {
       BELL_LOG(error, kLogTag, "control server listen failed: {}",
                controlListenRes.error().message());
@@ -110,8 +110,8 @@ class SnapclientTask : public bell::Task {
       config.host = settings.serverHost();
       config.port = settings.serverPort();
     } else {
-      config.host = CONFIG_SNAPCLIENT_SERVER_HOST;
-      config.port = CONFIG_SNAPCLIENT_SERVER_PORT;
+      config.host = CONFIG_SNAPSERVER_HOST;
+      config.port = CONFIG_SNAPSERVER_PORT;
     }
     if (!settings.hostname().empty()) {
       config.clientName = settings.hostname();

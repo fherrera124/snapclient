@@ -19,7 +19,7 @@ class ControlServer {
  public:
   explicit ControlServer(ControlSettings& settings);
 
-  bell::Result<> listen(uint16_t port = 8080);
+  bell::Result<> listen(uint16_t port = 80);
 
   // Adds GET/POST /api/dac/settings and GET /api/dac/faults. Only call
   // this when a target actually has a TAS5805M wired - CLI runs and any
