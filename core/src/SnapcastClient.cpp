@@ -1,5 +1,6 @@
 #include "snapclient/SnapcastClient.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstring>
@@ -170,6 +171,18 @@ bool SnapcastClient::readAndDispatchOne() {
   base->received.sec = static_cast<int32_t>(receivedAt / 1000000);
   base->received.usec = static_cast<int32_t>(receivedAt % 1000000);
 
+  // Read straight into its final destination instead of through the
+  // generic buffer below - this is the one message type frequent and big
+  // enough (uncompressed Pcm especially) for an extra full-size copy to
+  // matter.
+  if (base->type == MessageType::WireChunk) {
+    if (!readAndHandleWireChunk(base->size)) {
+      return false;
+    }
+    sendTimeSync();
+    return true;
+  }
+
   bool ok = true;
   try {
     std::vector<std::byte> payload(base->size);
@@ -181,9 +194,6 @@ bool SnapcastClient::readAndDispatchOne() {
     switch (base->type) {
       case MessageType::CodecHeader:
         ok = handleCodecHeader(payload.data(), payload.size());
-        break;
-      case MessageType::WireChunk:
-        handleWireChunk(payload.data(), payload.size());
         break;
       case MessageType::ServerSettings:
         handleServerSettings(payload.data(), payload.size());
@@ -280,19 +290,51 @@ bool SnapcastClient::handleCodecHeader(const std::byte* payload, size_t len) {
   return true;
 }
 
-void SnapcastClient::handleWireChunk(const std::byte* payload, size_t len) {
-  if (!receivedCodecHeader_) {
-    return;
+bool SnapcastClient::readAndHandleWireChunk(uint32_t totalSize) {
+  std::array<std::byte, WireChunkHeader::kWireSize> headerBuf{};
+  if (!readExact(headerBuf.data(), headerBuf.size())) {
+    BELL_LOG(warn, LOG_TAG, "reading wire chunk header failed");
+    return false;
   }
-  auto chunk = WireChunkMessage::parse(payload, len);
-  if (!chunk) {
-    return;
+  auto header = WireChunkHeader::parse(headerBuf.data(), headerBuf.size());
+  if (!header || totalSize < WireChunkHeader::kWireSize ||
+      header->payloadSize != totalSize - WireChunkHeader::kWireSize) {
+    BELL_LOG(warn, LOG_TAG, "malformed wire chunk header");
+    return false;
   }
 
-  if (onAudioChunk) {
-    onAudioChunk(activeCodec_, chunk->payload.data(), chunk->payload.size(),
-                chunk->timestamp.toMicros());
+  // Only allocate the real destination once the codec (and so the decoder/
+  // queue capacity sized for it) is actually known.
+  ChunkBuffer buf;
+  if (receivedCodecHeader_) {
+    buf = acquireChunkBuffer(header->payloadSize);
   }
+
+  if (buf) {
+    if (!readExact(buf.data(), buf.size())) {
+      BELL_LOG(warn, LOG_TAG, "reading wire chunk payload failed");
+      return false;
+    }
+  } else if (header->payloadSize > 0) {
+    // No codec yet, or the allocation above failed under memory pressure -
+    // still must drain these bytes off the socket, or the next message's
+    // header would be read from the middle of this one.
+    std::array<std::byte, 256> discard;
+    size_t remaining = header->payloadSize;
+    while (remaining > 0) {
+      size_t n = std::min(remaining, discard.size());
+      if (!readExact(discard.data(), n)) {
+        BELL_LOG(warn, LOG_TAG, "draining wire chunk payload failed");
+        return false;
+      }
+      remaining -= n;
+    }
+  }
+
+  if (receivedCodecHeader_ && onAudioChunk) {
+    onAudioChunk(activeCodec_, std::move(buf), header->timestamp.toMicros());
+  }
+  return true;
 }
 
 bell::Result<size_t> SnapcastClient::decodeOpus(

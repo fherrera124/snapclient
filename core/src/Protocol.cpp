@@ -166,20 +166,16 @@ std::optional<CodecHeaderMessage> CodecHeaderMessage::parse(
   return m;
 }
 
-std::optional<WireChunkMessage> WireChunkMessage::parse(
-    const std::byte* payload, size_t len) {
-  if (len < 12) {
+std::optional<WireChunkHeader> WireChunkHeader::parse(const std::byte* data,
+                                                       size_t len) {
+  if (len < kWireSize) {
     return std::nullopt;
   }
-  WireChunkMessage m;
-  m.timestamp.sec = readI32LE(payload);
-  m.timestamp.usec = readI32LE(payload + 4);
-  uint32_t size = readU32LE(payload + 8);
-  if (len < size_t{12} + size) {
-    return std::nullopt;
-  }
-  m.payload.assign(payload + 12, payload + 12 + size);
-  return m;
+  WireChunkHeader h;
+  h.timestamp.sec = readI32LE(data);
+  h.timestamp.usec = readI32LE(data + 4);
+  h.payloadSize = readU32LE(data + 8);
+  return h;
 }
 
 std::vector<std::byte> TimeMessage::serialize() const {

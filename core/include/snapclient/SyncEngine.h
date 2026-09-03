@@ -48,9 +48,12 @@ class SyncEngine {
   // ring occupancy) - caching it would mean either recomputing
   // onSettingsChanged() every chunk (which also resets playing_/medians,
   // wrongly treating a routine latency update as a resync-worthy event)
-  // or silently evaluating against a stale value.
+  // or silently evaluating against a stale value. chunkFrames is this
+  // chunk's actual frame count, not a fixed assumption - it varies by
+  // codec (and, for PCM, by the server's chunk_ms setting).
   SyncResult evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
-                      size_t queueDepth, int32_t dacLatencyUs);
+                      size_t queueDepth, int32_t dacLatencyUs,
+                      size_t chunkFrames);
 
   // Call after writing a chunk (or after a WaitMore/DropLate outcome,
   // frameCount=0), so the virtual playback clock stays accurate.

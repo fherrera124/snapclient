@@ -74,12 +74,17 @@ struct CodecHeaderMessage {
                                                   size_t len);
 };
 
-struct WireChunkMessage {
-  Timestamp timestamp;
-  std::vector<std::byte> payload;
+// The fixed-size header in front of a WireChunk message's audio payload -
+// parsed on its own so the payload can be read straight into its final
+// destination buffer instead of through an intermediate copy.
+struct WireChunkHeader {
+  static constexpr size_t kWireSize = 12;
 
-  static std::optional<WireChunkMessage> parse(const std::byte* payload,
-                                                size_t len);
+  Timestamp timestamp;
+  uint32_t payloadSize = 0;
+
+  static std::optional<WireChunkHeader> parse(const std::byte* data,
+                                               size_t len);
 };
 
 struct TimeMessage {

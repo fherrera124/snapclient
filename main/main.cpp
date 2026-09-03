@@ -145,9 +145,9 @@ class SnapclientTask : public bell::Task {
       pipeline->onTimeSample(offsetUs, maxErrorUs, t);
     };
     client.onAudioChunk = [&](snapclient::Codec codec,
-                              const std::byte* payload, size_t len,
+                              snapclient::ChunkBuffer payload,
                               int64_t serverTimeUs) {
-      pipeline->onAudioChunk(codec, payload, len, serverTimeUs);
+      pipeline->onAudioChunk(codec, std::move(payload), serverTimeUs);
     };
 
     BELL_LOG(info, kLogTag, "connecting to {}:{}...", config.host,

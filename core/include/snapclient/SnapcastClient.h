@@ -12,6 +12,7 @@
 #include <bell/utils/Task.h>
 #include <tcb/span.hpp>
 
+#include "snapclient/ChunkBuffer.h"
 #include "snapclient/Protocol.h"
 
 namespace snapclient {
@@ -57,9 +58,9 @@ class SnapcastClient : public bell::Task {
   // guaranteed to decode against it correctly.
   std::function<void(Codec codec, const bell::audio::Format&)> onCodecReady;
   // codec is what payload is encoded with: Pcm is usable as-is, Opus
-  // needs decodeOpus() first.
-  std::function<void(Codec codec, const std::byte* payload, size_t len,
-                     int64_t serverTimeUs)>
+  // needs decodeOpus() first. payload is falsy if allocating for it
+  // failed - still fired so the caller can account for the frames.
+  std::function<void(Codec codec, ChunkBuffer payload, int64_t serverTimeUs)>
       onAudioChunk;
   std::function<void(const ServerSettings&)> onServerSettings;
   std::function<void(int64_t offsetUs, int64_t maxErrorUs, int64_t nowUs)>
@@ -110,7 +111,14 @@ class SnapcastClient : public bell::Task {
   void disconnect();
 
   bool handleCodecHeader(const std::byte* payload, size_t len);
-  void handleWireChunk(const std::byte* payload, size_t len);
+  // Reads and handles one WireChunk message's payload straight off the
+  // socket into its final destination buffer - totalSize is the whole
+  // message's byte count (WireChunkHeader::kWireSize + audio payload), as
+  // already read from the BaseMessage header. false only for a socket read
+  // failure (the connection itself is broken); a payload allocation
+  // failure is a separate, non-fatal condition still reported via
+  // onAudioChunk with a falsy payload.
+  bool readAndHandleWireChunk(uint32_t totalSize);
   void handleServerSettings(const std::byte* payload, size_t len);
   void handleTime(const BaseMessage& base, const std::byte* payload,
                   size_t len);

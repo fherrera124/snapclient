@@ -77,7 +77,7 @@ ChunkBuffer::~ChunkBuffer() {
   }
 }
 
-ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len) {
+ChunkBuffer acquireChunkBuffer(size_t len) {
   if (len == 0) {
     return ChunkBuffer(nullptr, 0);
   }
@@ -88,8 +88,15 @@ ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len) {
   if (!dst) {
     return {};
   }
-  std::memcpy(dst, src, len);
   return ChunkBuffer(dst, len);
+}
+
+ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len) {
+  ChunkBuffer buf = acquireChunkBuffer(len);
+  if (buf && len > 0) {
+    std::memcpy(buf.data(), src, len);
+  }
+  return buf;
 }
 
 size_t chunkHeapFreeBytes() {

@@ -48,8 +48,7 @@ class PlaybackPipeline {
   void onServerSettings(const ServerSettings& s);
   void onCodecReady(Codec codec, const bell::audio::Format& fmt);
   void onTimeSample(int64_t offsetUs, int64_t maxErrorUs, int64_t t);
-  void onAudioChunk(Codec codec, const std::byte* payload, size_t len,
-                    int64_t serverTimeUs);
+  void onAudioChunk(Codec codec, ChunkBuffer payload, int64_t serverTimeUs);
 
   // Pops and plays (or drops) one chunk, or returns immediately if none
   // are ready yet. Call in a tight loop.
@@ -86,10 +85,6 @@ class PlaybackPipeline {
   // for still carries useful timing (it falls back to the
   // accounted-silence path in onAudioChunk below).
   static constexpr size_t kQueueCapacity = 40;
-  // A count-based cap alone assumes Opus-sized chunks (RFC 6716 caps a
-  // frame at 1275B) - a board with no PSRAM can't hold many chunks of
-  // uncompressed Pcm (3840B each) in internal heap.
-  static constexpr size_t kQueueMemoryBudgetBytes = 16 * 1024;
   // Decode (~12ms avg) is slower than dsp+i2s-write (~6.5-7.5ms combined),
   // so 2 slots is enough for one-chunk-ahead overlap between DecoderTask
   // and the consumer; bump if soak testing shows the consumer stalling

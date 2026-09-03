@@ -19,6 +19,20 @@ int64_t nowUs() {
       .count();
 }
 
+const char* codecName(Codec codec) {
+  switch (codec) {
+    case Codec::Pcm:
+      return "PCM";
+    case Codec::Opus:
+      return "Opus";
+    case Codec::Flac:
+      return "FLAC";
+    case Codec::None:
+      return "none";
+  }
+  return "unknown";
+}
+
 }  // namespace
 
 PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
@@ -62,7 +76,7 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
   }
 }
 
-void PlaybackPipeline::onCodecReady(Codec /*codec*/,
+void PlaybackPipeline::onCodecReady(Codec codec,
                                     const bell::audio::Format& fmt) {
   sampleRate_ = fmt.getSampleRate();
   sampleRateHz_.store(fmt.getSampleRateValue(), std::memory_order_relaxed);
@@ -80,7 +94,9 @@ void PlaybackPipeline::onCodecReady(Codec /*codec*/,
   queue_.clear();
   pcmQueue_.clear();
   pendingChunk_.reset();
-  BELL_LOG(info, logTag_, "codec ready: {} Hz, {} ch", fmt.getSampleRateValue(),
+  BELL_LOG(info, logTag_, "codec ready: {} {} Hz, {}-bit, {} ch",
+           codecName(codec), fmt.getSampleRateValue(),
+           bell::audio::getSampleSizeInBytes(fmt.getSampleFormat()) * 8,
            fmt.getNumChannels());
 }
 
@@ -109,30 +125,28 @@ void PlaybackPipeline::onTimeSample(int64_t offsetUs, int64_t maxErrorUs,
   }
 }
 
-void PlaybackPipeline::onAudioChunk(Codec codec, const std::byte* payload,
-                                    size_t len, int64_t serverTimeUs) {
+void PlaybackPipeline::onAudioChunk(Codec codec, ChunkBuffer payload,
+                                    int64_t serverTimeUs) {
   if (!sync_.latencyReady()) {
     return;
   }
 
-  const size_t effectiveQueueCeiling = std::min(
-      queue_.capacity(), kQueueMemoryBudgetBytes / std::max<size_t>(len, 1));
-
-  if (queue_.size() >= effectiveQueueCeiling) {
+  if (queue_.size() >= queue_.capacity()) {
     droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
-  } else {
-    QueuedChunk item;
-    item.serverTimeUs = serverTimeUs;
-    item.codec = codec;
-    item.codecGen = codecGeneration_.load(std::memory_order_relaxed);
-    // An allocation failure queues a silent placeholder (item.payload left
-    // empty) instead of dropping the chunk outright - a dropped chunk
-    // leaves a gap in the played frame count that the server's clock
-    // doesn't have.
-    item.payload = acquireChunkBuffer(payload, len);
-    if (!queue_.tryPush(std::move(item))) {
-      droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
-    }
+    return;
+  }
+
+  QueuedChunk item;
+  item.serverTimeUs = serverTimeUs;
+  item.codec = codec;
+  item.codecGen = codecGeneration_.load(std::memory_order_relaxed);
+  // A falsy payload (SnapcastClient couldn't allocate for it) is still
+  // queued as a silent placeholder instead of dropped outright - a dropped
+  // chunk leaves a gap in the played frame count that the server's clock
+  // doesn't have.
+  item.payload = std::move(payload);
+  if (!queue_.tryPush(std::move(item))) {
+    droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
   }
 }
 
@@ -238,8 +252,8 @@ void PlaybackPipeline::consumeOnce() {
   // out.
   const int32_t dacLatencyUs = static_cast<int32_t>(dacFixedLatencyMs_) * 1000;
 
-  auto result =
-      sync_.evaluate(itemServerTimeUs, nowUs(), queueDepth, dacLatencyUs);
+  auto result = sync_.evaluate(itemServerTimeUs, nowUs(), queueDepth,
+                               dacLatencyUs, pcmLen / kBytesPerFrame);
 
   if (result.decision == PlayDecision::WaitMore) {
     lockOntoChunk(std::move(item), result.waitUs);

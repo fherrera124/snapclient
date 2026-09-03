@@ -23,6 +23,7 @@ class ChunkBuffer {
   explicit operator bool() const { return valid_; }
 
  private:
+  friend ChunkBuffer acquireChunkBuffer(size_t len);
   friend ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len);
   ChunkBuffer(std::byte* data, size_t size)
       : data_(data), size_(size), valid_(true) {}
@@ -32,16 +33,24 @@ class ChunkBuffer {
   bool valid_ = false;
 };
 
-// Copies src[0..len) into a new heap buffer sized exactly to len. Never
-// blocks or throws - tries PSRAM first where available, then the default
-// heap, and gives up immediately rather than stall the network thread
-// this runs on. Returns a falsy ChunkBuffer on failure.
+// Reserves a new heap buffer sized exactly to len, left uninitialized - for
+// a caller about to fill it directly (e.g. reading a socket payload into
+// it) instead of copying from an already-in-memory source. Never blocks or
+// throws - tries PSRAM first where available, then the default heap, and
+// gives up immediately rather than stall the network thread this runs on.
+// Returns a falsy ChunkBuffer on failure.
+ChunkBuffer acquireChunkBuffer(size_t len);
+
+// Copies src[0..len) into a new heap buffer sized exactly to len. Same
+// failure/allocation behavior as the size-only overload above.
 ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len);
 
-// Diagnostics for periodic logging only, never the hot per-chunk path -
-// chunkHeapLargestFreeBlockBytes() walks the whole heap under a global
-// lock. Both report 0 on host builds (no esp_heap_caps.h there).
+// A cheap counter read (no heap walk) - safe to call from a hot per-chunk
+// path. 0 on host builds (no esp_heap_caps.h there).
 size_t chunkHeapFreeBytes();
+
+// Diagnostics for periodic logging only, never the hot per-chunk path -
+// walks the whole heap under a global lock. 0 on host builds.
 size_t chunkHeapLargestFreeBlockBytes();
 
 }  // namespace snapclient

@@ -1,11 +1,10 @@
 #include "snapclient/SyncEngine.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
 #include <bell/Logger.h>
-
-#include "snapclient/DecoderTask.h"
 
 namespace snapclient {
 
@@ -43,7 +42,8 @@ void SyncEngine::reset() {
 }
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
-                                size_t queueDepth, int32_t dacLatencyUs) {
+                                size_t queueDepth, int32_t dacLatencyUs,
+                                size_t chunkFrames) {
   const int64_t diffToServer = timeFilter_.offsetAt(nowUs);
   const int64_t serverNowUs = nowUs + diffToServer;
   const int64_t bufferUs = int64_t{bufferMs_} * 1000;
@@ -60,7 +60,8 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
     // we're behind by are also already stale - skip them all in one
     // pass.
     const int64_t chunkDurationUs =
-        static_cast<int64_t>(kFramesPerChunk) * 1'000'000 / sampleRate_;
+        static_cast<int64_t>(std::max<size_t>(chunkFrames, 1)) * 1'000'000 /
+        sampleRate_;
     const int chunksToSkip =
         static_cast<int>((age + chunkDurationUs - 1) / chunkDurationUs);
     BELL_LOG(warn, kLogTag,
