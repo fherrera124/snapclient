@@ -74,6 +74,8 @@ class PlaybackPipeline {
   // instead of starting from empty silence.
   void lockOntoChunk(DecodedChunk firstItem, int64_t waitUs);
 
+  int64_t minLockLeadUs() const;
+
   // Resizes queue_ to approximately bufferMs_ worth of chunks - a
   // capacity close to that target leaves little headroom for ordinary
   // network jitter as bufferMs_ grows. No-op until both bufferMs_ and

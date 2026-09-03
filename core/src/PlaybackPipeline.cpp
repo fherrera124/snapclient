@@ -164,6 +164,16 @@ size_t PlaybackPipeline::prepareForOutput(const std::byte* pcm, size_t len,
   return targetFrames;
 }
 
+// lockOntoChunk() must preload the whole ring before its armed deadline,
+// and decode runs near real time - hence the ring duration plus margin.
+int64_t PlaybackPipeline::minLockLeadUs() const {
+  const uint32_t sr = sampleRateHz_.load(std::memory_order_relaxed);
+  if (sr == 0) {
+    return 0;
+  }
+  return int64_t{audioSink_.ringCapacityFrames()} * 1'000'000 * 3 / (sr * 2);
+}
+
 void PlaybackPipeline::lockOntoChunk(DecodedChunk firstItem, int64_t waitUs) {
   waiter_.arm(waitUs);
   audioSink_.disable();
@@ -246,14 +256,11 @@ void PlaybackPipeline::consumeOnce() {
   const std::byte* pcm = item.pcm.data() + offsetFrames * kBytesPerFrame;
   const size_t pcmLen = item.pcm.size() - offsetFrames * kBytesPerFrame;
 
-  // Only the fixed per-client latency feeds evaluate() - SyncEngine's
-  // actual-side clock never subtracts DMA ring occupancy, so folding a
-  // ring-occupancy estimate in here would bias age instead of cancelling
-  // out.
   const int32_t dacLatencyUs = static_cast<int32_t>(dacFixedLatencyMs_) * 1000;
 
   auto result = sync_.evaluate(itemServerTimeUs, nowUs(), queueDepth,
-                               dacLatencyUs, pcmLen / kBytesPerFrame);
+                               dacLatencyUs, pcmLen / kBytesPerFrame,
+                               minLockLeadUs());
 
   if (result.decision == PlayDecision::WaitMore) {
     lockOntoChunk(std::move(item), result.waitUs);

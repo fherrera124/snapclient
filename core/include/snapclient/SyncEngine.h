@@ -51,9 +51,11 @@ class SyncEngine {
   // or silently evaluating against a stale value. chunkFrames is this
   // chunk's actual frame count, not a fixed assumption - it varies by
   // codec (and, for PCM, by the server's chunk_ms setting).
+  // minLockLeadUs is how far ahead a chunk must be due before this
+  // commits to it; 0 accepts any chunk not already late.
   SyncResult evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
                       size_t queueDepth, int32_t dacLatencyUs,
-                      size_t chunkFrames);
+                      size_t chunkFrames, int64_t minLockLeadUs);
 
   // Call after writing a chunk (or after a WaitMore/DropLate outcome,
   // frameCount=0), so the virtual playback clock stays accurate.

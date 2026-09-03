@@ -43,7 +43,7 @@ void SyncEngine::reset() {
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
                                 size_t queueDepth, int32_t dacLatencyUs,
-                                size_t chunkFrames) {
+                                size_t chunkFrames, int64_t minLockLeadUs) {
   const int64_t diffToServer = timeFilter_.offsetAt(nowUs);
   const int64_t serverNowUs = nowUs + diffToServer;
   const int64_t bufferUs = int64_t{bufferMs_} * 1000;
@@ -51,19 +51,17 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
   if (!playing_) {
     const int64_t age =
         serverNowUs - chunkServerTimeUs - bufferUs + dacLatencyUs;
-    if (age < 0) {
+    if (age < -minLockLeadUs) {
       return {PlayDecision::WaitMore, -age, 0, false};
     }
-    // Already due or late - drop and keep searching (no grace window;
-    // lockWithPreloadedFrames() is the only way playing_ becomes true).
-    // Chunks arrive at a steady cadence, so however many chunk durations
-    // we're behind by are also already stale - skip them all in one
-    // pass.
+    // lockWithPreloadedFrames() is the only way playing_ becomes true, so
+    // there is no grace window - skip, in one pass, to a chunk with enough
+    // lead.
     const int64_t chunkDurationUs =
         static_cast<int64_t>(std::max<size_t>(chunkFrames, 1)) * 1'000'000 /
         sampleRate_;
-    const int chunksToSkip =
-        static_cast<int>((age + chunkDurationUs - 1) / chunkDurationUs);
+    const int chunksToSkip = static_cast<int>(
+        (age + minLockLeadUs + chunkDurationUs - 1) / chunkDurationUs);
     BELL_LOG(warn, kLogTag,
              "initial sync: age={} diffToServer={} bufferUs={} "
              "dacLatencyUs={} skipping {} more",
@@ -81,6 +79,8 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
     return {PlayDecision::DropLate, 0, 0, true};
   }
 
+  // Both sides are write frontiers, so the DMA backlog sits on both and
+  // cancels - it must not be subtracted here.
   const int64_t actualPlayLocalUs =
       playbackStartTimeUs_ + (samplesWritten_ * int64_t{1000000}) / sampleRate_;
   const int64_t targetPlayLocalUs =
@@ -102,8 +102,10 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
     return {PlayDecision::DropLate, 0, 0, true};
   }
 
+  // Shorter window than the hard resync above on purpose: correction must
+  // be able to start before that can trigger. median() is valid partly full.
   int frameAdjustment = 0;
-  if (shortMedian_.full()) {
+  if (miniMedian_.full()) {
     frameAdjustment = steadyStateFrameAdjustment(
         shortMedian_.median(), miniMedian_.median(), age);
   }

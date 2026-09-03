@@ -51,7 +51,8 @@ class SteadyStateDriver {
     const int64_t actual = actualPlayLocalUs();
     const int64_t chunkServerTimeUs = actual - ageUs - bufferUs_;
     auto result = engine_.evaluate(chunkServerTimeUs, actual, queueDepth,
-                                   /*dacLatencyUs=*/0, kFramesPerTestChunk);
+                                   /*dacLatencyUs=*/0, kFramesPerTestChunk,
+                                   /*minLockLeadUs=*/0);
     engine_.onFramesWritten(kFramesPerTestChunk);
     samplesWritten_ += kFramesPerTestChunk;
     return result;
@@ -142,7 +143,8 @@ void test_lock_with_preloaded_frames_seeds_virtual_clock() {
 
   auto result =
       engine.evaluate(chunkServerTimeUs, evalNowUs, /*queueDepth=*/1,
-                      /*dacLatencyUs=*/0, kFramesPerTestChunk);
+                      /*dacLatencyUs=*/0, kFramesPerTestChunk,
+                      /*minLockLeadUs=*/0);
   CHECK(result.decision == PlayDecision::Play);
   CHECK(result.ageUs == 0);
 }
@@ -161,7 +163,8 @@ void test_initial_sync_drops_a_due_chunk_instead_of_playing_it() {
 
   // age == 0 exactly: right on time, not early - still must not play.
   auto result = engine.evaluate(kNowUs - kBufferUs, kNowUs, /*queueDepth=*/1,
-                                /*dacLatencyUs=*/0, kFramesPerTestChunk);
+                                /*dacLatencyUs=*/0, kFramesPerTestChunk,
+                                /*minLockLeadUs=*/0);
   CHECK(result.decision == PlayDecision::DropLate);
   CHECK(!engine.isPlaying());
 }

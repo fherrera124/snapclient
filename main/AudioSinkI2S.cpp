@@ -12,6 +12,8 @@ namespace {
 constexpr uint32_t kPrimeSilenceMs = 100;
 constexpr size_t kBytesPerFrame = 2 /*channels*/ * sizeof(int16_t);
 constexpr size_t kSilenceChunkFrames = 256;
+// kDmaFrameNum must equal the decoded chunk size: the driver paces writes
+// on descriptor boundaries, and an unfilled descriptor tail plays as garbage.
 constexpr size_t kDmaDescNum = 4;
 constexpr size_t kDmaFrameNum = 960;
 }  // namespace
@@ -172,6 +174,10 @@ void AudioSinkI2S::enable() {
   if (txChan_ != nullptr) {
     i2s_channel_enable(txChan_);
   }
+}
+
+uint32_t AudioSinkI2S::ringCapacityFrames() const {
+  return static_cast<uint32_t>(kDmaDescNum * kDmaFrameNum);
 }
 
 }  // namespace snapclient

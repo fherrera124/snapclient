@@ -23,6 +23,10 @@ class AudioSink {
   // with whatever was preloaded flowing immediately.
   virtual void disable() = 0;
   virtual void enable() = 0;
+
+  // Frames the output path can hold buffered ahead of playback (e.g.
+  // dma_desc_num * dma_frame_num). 0 if not configured.
+  virtual uint32_t ringCapacityFrames() const = 0;
 };
 
 }  // namespace snapclient

@@ -46,6 +46,8 @@ class AudioSinkI2S : public snapclient::AudioSink {
   void disable() override;
   void enable() override;
 
+  uint32_t ringCapacityFrames() const override;
+
  private:
   const char* LOG_TAG = "AudioSinkI2S";
 
