@@ -11,7 +11,13 @@ namespace snapclient {
 class AudioSink {
  public:
   virtual ~AudioSink() = default;
-  virtual void configure(uint32_t sampleRate) = 0;
+  // chunkFrames is the active codec's real samples-per-chunk (e.g. 960 for
+  // Opus, or a Flac stream's STREAMINFO block size) - implementations that
+  // pace real-time output in fixed-size hardware buffers (DMA descriptors)
+  // should size those to evenly divide it, so writing one chunk always
+  // blocks for an exact number of buffer-durations instead of leaving a
+  // partial remainder that mis-tracks real elapsed time.
+  virtual void configure(uint32_t sampleRate, uint32_t chunkFrames) = 0;
   virtual void write(const std::byte* pcm, size_t len) = 0;
   virtual void setMuted(bool muted) = 0;
 

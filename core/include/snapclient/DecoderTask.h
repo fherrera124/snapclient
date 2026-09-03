@@ -15,11 +15,14 @@ namespace snapclient {
 
 class SnapcastClient;
 
-// Snapcast's Opus stream here always encodes 20ms frames at 48kHz - 960
-// samples per channel.
-constexpr size_t kFramesPerChunk = 960;
 constexpr size_t kBytesPerFrame = 2 * sizeof(int16_t);  // stereo S16
-constexpr size_t kPcmChunkBytes = kFramesPerChunk * kBytesPerFrame;
+// decodeBuf's fixed size - must cover the largest single decode() call's
+// output across every codec, allocated once before any chunk exists so it
+// can't be sized from an observed value. 4096 samples/channel covers
+// libFLAC's own block size at snapserver's default (and higher) FLAC
+// compression levels; Opus's fixed 960-sample chunks fit comfortably
+// within it too.
+constexpr size_t kMaxDecodedChunkBytes = 4096 * kBytesPerFrame;
 
 struct QueuedChunk {
   int64_t serverTimeUs = 0;
@@ -47,7 +50,8 @@ class DecoderTask : public bell::Task {
   DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
               BoundedQueue<DecodedChunk>& pcmQueue,
               std::atomic<uint32_t>& codecGeneration, SnapcastClient& client,
-              DspProcessor& dsp, std::atomic<uint32_t>& sampleRateHz);
+              DspProcessor& dsp, std::atomic<uint32_t>& sampleRateHz,
+              std::atomic<uint32_t>& samplesPerChunkHint);
 
  protected:
   void runTask() override;
@@ -59,6 +63,11 @@ class DecoderTask : public bell::Task {
   SnapcastClient& client_;
   DspProcessor& dsp_;
   std::atomic<uint32_t>& sampleRateHz_;
+  // Most recent real (decoded, or passthrough for Pcm) samples-per-chunk
+  // count - written here after every chunk, read by
+  // PlaybackPipeline::applyQueueCapacity() instead of a fixed per-codec
+  // constant.
+  std::atomic<uint32_t>& samplesPerChunkHint_;
 };
 
 }  // namespace snapclient

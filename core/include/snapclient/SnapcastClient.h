@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <bell/audio/Common.h>
+#include <bell/audio/FlacCodec.h>
 #include <bell/audio/OpusCodec.h>
 #include <bell/net/TCPSocket.h>
 #include <bell/utils/Task.h>
@@ -80,6 +81,18 @@ class SnapcastClient : public bell::Task {
   bell::Result<size_t> decodeOpus(tcb::span<const std::byte> encoded,
                                   std::byte* out, size_t outCapacity);
 
+  // Same contract as decodeOpus(), for the Flac codec.
+  bell::Result<size_t> decodeFlac(tcb::span<const std::byte> encoded,
+                                  std::byte* out, size_t outCapacity);
+
+  // Best known samples-per-chunk for the active codec: exact for Opus
+  // (960, fixed), the FLAC stream's STREAMINFO max block size for Flac -
+  // set once at codec-header time, before any chunk has actually been
+  // decoded. Callers wanting the continuously-refined value should track
+  // real decoded/observed chunk sizes themselves instead (see
+  // PlaybackPipeline's samplesPerChunkHint_).
+  uint32_t expectedSamplesPerChunk() const { return expectedSamplesPerChunk_; }
+
  protected:
   void taskLoop() override;
   void wakeTask() override;
@@ -100,8 +113,12 @@ class SnapcastClient : public bell::Task {
   // handleCodecHeader) recreates the decoder, which would otherwise race
   // a caller's decodeOpus() call (a different thread).
   std::mutex opusMutex_;
+  bell::audio::FlacCodec flacCodec_;
+  // Guards flacCodec_, same reasoning as opusMutex_ above.
+  std::mutex flacMutex_;
   bell::audio::Format pcmFormat_;
   Codec activeCodec_ = Codec::None;
+  uint32_t expectedSamplesPerChunk_ = 0;
 
   bool connectAndHandshake();
   bool readAndDispatchOne();

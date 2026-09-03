@@ -12,6 +12,7 @@
 #include <tcb/span.hpp>
 
 #ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 #endif
 
@@ -205,8 +206,16 @@ bool SnapcastClient::readAndDispatchOne() {
         break;
     }
   } catch (const std::bad_alloc&) {
+#ifdef ESP_PLATFORM
+    BELL_LOG(warn, LOG_TAG,
+             "allocation failed for a {}-byte message: freeHeap={} "
+             "largestFreeBlock={}",
+             base->size, esp_get_free_heap_size(),
+             heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#else
     BELL_LOG(warn, LOG_TAG, "allocation failed for a {}-byte message",
              base->size);
+#endif
     return false;
   }
 
@@ -246,41 +255,69 @@ bool SnapcastClient::handleCodecHeader(const std::byte* payload, size_t len) {
     return false;
   }
 
-  if (header->codec != Codec::Pcm && header->codec != Codec::Opus) {
+  if (header->codec != Codec::Pcm && header->codec != Codec::Opus &&
+      header->codec != Codec::Flac) {
     BELL_LOG(error, LOG_TAG,
-             "unsupported codec (only pcm/opus are implemented)");
-    return false;
-  }
-
-  auto sampleRate = toSampleRate(header->sampleRate);
-  if (!sampleRate) {
-    BELL_LOG(error, LOG_TAG, "unsupported sample rate {}",
-             header->sampleRate);
+             "unsupported codec (only pcm/opus/flac are implemented)");
     return false;
   }
 
   activeCodec_ = header->codec;
-  pcmFormat_ = bell::audio::Format(header->channels,
-                                   bell::audio::SampleFormat::S16,
-                                   *sampleRate);
 
-  if (activeCodec_ == Codec::Opus) {
-    // bufferSize default (100ms) is 5x what a single 20ms/960-sample
-    // decode call ever writes (samplesPerPacket defaults to 960 too) -
-    // this wastes ~15KB of the tmpBuffer that's never touched.
-    bell::audio::OpusConfig opusConfig;
-    opusConfig.bufferSize = 4096;
-    std::lock_guard<std::mutex> lock(opusMutex_);
-    auto setupRes = opusCodec_.setupDecode(pcmFormat_, opusConfig);
+  if (activeCodec_ == Codec::Flac) {
+    // Flac's real format lives in STREAMINFO, inside flacPayload - not in
+    // header->sampleRate/channels/bits, which parse() never populates for
+    // it (see CodecHeaderMessage::flacPayload).
+    std::lock_guard<std::mutex> lock(flacMutex_);
+    auto setupRes =
+        flacCodec_.setupDecode(bell::audio::Format{}, bell::audio::FlacConfig{});
     if (!setupRes) {
-      BELL_LOG(error, LOG_TAG, "opus setupDecode failed: {}",
+      BELL_LOG(error, LOG_TAG, "flac setupDecode failed: {}",
                setupRes.error());
       return false;
     }
+    auto headerRes = flacCodec_.setupDecodeFromHeaders(tcb::span<const std::byte>(
+        header->flacPayload.data(), header->flacPayload.size()));
+    if (!headerRes ||
+        *headerRes != bell::audio::Codec::SetupStatus::Ready) {
+      BELL_LOG(error, LOG_TAG, "flac setupDecodeFromHeaders failed");
+      return false;
+    }
+    pcmFormat_ = flacCodec_.getAudioFormat();
+    expectedSamplesPerChunk_ = flacCodec_.getMaxBlockSize();
+  } else {
+    auto sampleRate = toSampleRate(header->sampleRate);
+    if (!sampleRate) {
+      BELL_LOG(error, LOG_TAG, "unsupported sample rate {}",
+               header->sampleRate);
+      return false;
+    }
+    pcmFormat_ = bell::audio::Format(header->channels,
+                                     bell::audio::SampleFormat::S16,
+                                     *sampleRate);
+    // Pcm has no fixed per-chunk sample count of its own - this is just a
+    // bootstrap value until the first real chunk's size corrects it (see
+    // DecoderTask's samplesPerChunkHint_ updates).
+    expectedSamplesPerChunk_ = kOpusSamplesPerChunk;
+
+    if (activeCodec_ == Codec::Opus) {
+      // bufferSize default (100ms) is 5x what a single 20ms/960-sample
+      // decode call ever writes (samplesPerPacket defaults to 960 too) -
+      // this wastes ~15KB of the tmpBuffer that's never touched.
+      bell::audio::OpusConfig opusConfig;
+      opusConfig.bufferSize = 4096;
+      std::lock_guard<std::mutex> lock(opusMutex_);
+      auto setupRes = opusCodec_.setupDecode(pcmFormat_, opusConfig);
+      if (!setupRes) {
+        BELL_LOG(error, LOG_TAG, "opus setupDecode failed: {}",
+                 setupRes.error());
+        return false;
+      }
 #ifdef ESP_PLATFORM
-    BELL_LOG(info, LOG_TAG, "opus setupDecode done: freeHeap={}",
-             esp_get_free_heap_size());
+      BELL_LOG(info, LOG_TAG, "opus setupDecode done: freeHeap={}",
+               esp_get_free_heap_size());
 #endif
+    }
   }
 
   receivedCodecHeader_ = true;
@@ -341,6 +378,21 @@ bell::Result<size_t> SnapcastClient::decodeOpus(
     tcb::span<const std::byte> encoded, std::byte* out, size_t outCapacity) {
   std::lock_guard<std::mutex> lock(opusMutex_);
   auto decoded = opusCodec_.decode(encoded);
+  if (!decoded) {
+    return nonstd::make_unexpected(decoded.error());
+  }
+  if (decoded->pcm.size() > outCapacity) {
+    return nonstd::make_unexpected(
+        bell::audio::make_error_code(bell::audio::Errc::InvalidFormat));
+  }
+  std::memcpy(out, decoded->pcm.data(), decoded->pcm.size());
+  return decoded->pcm.size();
+}
+
+bell::Result<size_t> SnapcastClient::decodeFlac(
+    tcb::span<const std::byte> encoded, std::byte* out, size_t outCapacity) {
+  std::lock_guard<std::mutex> lock(flacMutex_);
+  auto decoded = flacCodec_.decode(encoded);
   if (!decoded) {
     return nonstd::make_unexpected(decoded.error());
   }

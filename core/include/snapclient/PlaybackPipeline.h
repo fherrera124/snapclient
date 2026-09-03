@@ -103,6 +103,11 @@ class PlaybackPipeline {
   // Raw Hz value of sampleRate_ below - shared with DecoderTask (which
   // dsp-processes chunks on its own thread) since it needs it too.
   std::atomic<uint32_t> sampleRateHz_{44100};
+  // Best known samples-per-chunk for the active codec - seeded from
+  // client_.expectedSamplesPerChunk() in onCodecReady(), kept accurate
+  // afterward by DecoderTask from real decoded/observed chunk sizes.
+  // applyQueueCapacity() reads this instead of a fixed per-codec constant.
+  std::atomic<uint32_t> samplesPerChunkHint_{kOpusSamplesPerChunk};
   DecoderTask decoder_;
   SnapcastClient& client_;
 
@@ -123,6 +128,9 @@ class PlaybackPipeline {
   int32_t lastSyncDacLatencyMs_ = 0;
 
   RateLimiter serverSettingsLogLimiter_;
+  // TEMP DIAGNOSTIC - remove once the FLAC choppy-audio investigation is
+  // done.
+  RateLimiter dropLogLimiter_;
   // A chunk dropped in onAudioChunk() never calls sync_.onFramesWritten(),
   // so sync_'s clock would fall behind real elapsed server-time - deferred
   // here since onAudioChunk() runs on a different thread than sync_'s.

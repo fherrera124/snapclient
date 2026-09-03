@@ -42,9 +42,11 @@ PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
       waiter_(waiter),
       queue_(kQueueCapacity),
       pcmQueue_(kPcmQueueCapacity),
-      decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_, sampleRateHz_),
+      decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_,
+              sampleRateHz_, samplesPerChunkHint_),
       client_(client),
-      serverSettingsLogLimiter_(1'000'000) {}
+      serverSettingsLogLimiter_(1'000'000),
+      dropLogLimiter_(500'000) {}
 
 void PlaybackPipeline::applyDspSettings(DspFlow flow,
                                         const DspFilterParams& params) {
@@ -80,7 +82,10 @@ void PlaybackPipeline::onCodecReady(Codec codec,
                                     const bell::audio::Format& fmt) {
   sampleRate_ = fmt.getSampleRate();
   sampleRateHz_.store(fmt.getSampleRateValue(), std::memory_order_relaxed);
-  audioSink_.configure(fmt.getSampleRateValue());
+  const uint32_t expectedSamplesPerChunk = client_.expectedSamplesPerChunk();
+  samplesPerChunkHint_.store(expectedSamplesPerChunk,
+                             std::memory_order_relaxed);
+  audioSink_.configure(fmt.getSampleRateValue(), expectedSamplesPerChunk);
   lastSyncBufferMs_ = bufferMs_;
   lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
   sync_.onSettingsChanged(bufferMs_, fmt.getSampleRateValue());
@@ -105,7 +110,9 @@ void PlaybackPipeline::applyQueueCapacity() {
   if (bufferMs_ <= 0 || sr == 0) {
     return;
   }
-  const double chunkDurationMs = kFramesPerChunk * 1000.0 / sr;
+  const uint32_t samplesPerChunk =
+      samplesPerChunkHint_.load(std::memory_order_relaxed);
+  const double chunkDurationMs = samplesPerChunk * 1000.0 / sr;
   const size_t entries =
       static_cast<size_t>(std::ceil(bufferMs_ / chunkDurationMs));
   const size_t capacity = std::max<size_t>(entries, 1);
@@ -131,8 +138,16 @@ void PlaybackPipeline::onAudioChunk(Codec codec, ChunkBuffer payload,
     return;
   }
 
+  // if (dropLogLimiter_.due(nowUs())) {
+  //   BELL_LOG(warn, logTag_, "diag: queue_={}/{} pcmQueue_={}/{}",
+  //            queue_.size(), queue_.capacity(), pcmQueue_.size(),
+  //            kPcmQueueCapacity);
+  // }
+
   if (queue_.size() >= queue_.capacity()) {
-    droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
+    droppedChunkFrames_.fetch_add(
+        samplesPerChunkHint_.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
     return;
   }
 
@@ -146,7 +161,9 @@ void PlaybackPipeline::onAudioChunk(Codec codec, ChunkBuffer payload,
   // doesn't have.
   item.payload = std::move(payload);
   if (!queue_.tryPush(std::move(item))) {
-    droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
+    droppedChunkFrames_.fetch_add(
+        samplesPerChunkHint_.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
   }
 }
 
@@ -155,12 +172,26 @@ size_t PlaybackPipeline::prepareForOutput(const std::byte* pcm, size_t len,
   const size_t frames = len / kBytesPerFrame;
 
   // Resampled across the whole chunk, not a single-frame drop/duplicate at
-  // the edge, since the magnitude can now exceed one frame.
+  // the edge, since the magnitude can now exceed one frame. frames==0 with
+  // frameAdjustment==-1 would go negative - clamping here (rather than
+  // trusting the caller) avoids that underflowing size_t and turning into
+  // a multi-gigabyte resize() below.
+  const int adjustedFrames = static_cast<int>(frames) + frameAdjustment;
+  if (adjustedFrames < 0) {
+    BELL_LOG(warn, logTag_,
+             "diag: prepareForOutput would underflow - frames={} "
+             "frameAdjustment={}",
+             frames, frameAdjustment);
+  }
   const size_t targetFrames =
-      static_cast<size_t>(static_cast<int>(frames) + frameAdjustment);
+      static_cast<size_t>(std::max(adjustedFrames, 0));
   scratchResampled_.resize(targetFrames * 2);  // stereo
-  DynamicResampler::process(reinterpret_cast<const int16_t*>(pcm), frames,
-                            scratchResampled_.data(), targetFrames);
+  // DynamicResampler::process() divides by outFrames when inFrames !=
+  // outFrames - skip the call entirely rather than feed it a 0.
+  if (targetFrames > 0) {
+    DynamicResampler::process(reinterpret_cast<const int16_t*>(pcm), frames,
+                              scratchResampled_.data(), targetFrames);
+  }
   return targetFrames;
 }
 
@@ -234,6 +265,14 @@ void PlaybackPipeline::consumeOnce() {
     // tryPop() already waited up to 10ms internally on a miss - woken
     // early as soon as DecoderTask pushes something.
     return;
+  }
+
+  // TEMP DIAGNOSTIC - remove once the flac crash cause is confirmed.
+  if (offsetFrames * kBytesPerFrame > item.pcm.size()) {
+    BELL_LOG(warn, logTag_,
+             "diag: offsetFrames underflow - offsetFrames={} pcmSize={}",
+             offsetFrames, item.pcm.size());
+    offsetFrames = 0;
   }
 
   // A resumed PendingChunk's timestamp/PCM start partway through the

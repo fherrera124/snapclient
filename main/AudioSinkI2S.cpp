@@ -12,8 +12,26 @@ namespace {
 constexpr uint32_t kPrimeSilenceMs = 100;
 constexpr size_t kBytesPerFrame = 2 /*channels*/ * sizeof(int16_t);
 constexpr size_t kSilenceChunkFrames = 256;
-constexpr size_t kDmaDescNum = 4;
-constexpr size_t kDmaFrameNum = 960;
+// ~80ms at 48kHz - how much hardware buffering absorbs write() scheduling
+// jitter before i2s_channel_write()'s blocking becomes an audible stall.
+constexpr size_t kTargetTotalDmaFrames = 3840;
+constexpr size_t kMaxDmaFrameNum = 480;
+
+// i2s_channel_write() unblocks in dma_frame_num-sized real-time increments
+// regardless of how many frames one write() call carries, so a descriptor
+// size that doesn't evenly divide the codec's real chunk size leaves a
+// partial remainder each call - observed directly: with a fixed 960
+// (Opus's own chunk size), a Flac write (1152 frames, 24ms) only actually
+// blocked ~20ms, silently crediting sync_'s played-frame clock ahead of
+// real time. Halving chunkFrames down to at most kMaxDmaFrameNum keeps it
+// an exact divisor - same approach as master's player_setup_i2s().
+size_t chooseDmaFrameNum(uint32_t chunkFrames) {
+  size_t frameNum = chunkFrames > 0 ? chunkFrames : kMaxDmaFrameNum;
+  while (frameNum > kMaxDmaFrameNum && frameNum % 2 == 0) {
+    frameNum /= 2;
+  }
+  return frameNum;
+}
 }  // namespace
 
 AudioSinkI2S::AudioSinkI2S(Config config) : config_(config) {
@@ -43,21 +61,23 @@ void AudioSinkI2S::teardownChannel() {
   txChan_ = nullptr;
 }
 
-void AudioSinkI2S::configure(uint32_t sampleRate) {
-  if (txChan_ != nullptr && sampleRate == currentSampleRate_) {
+void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
+  if (txChan_ != nullptr && sampleRate == currentSampleRate_ &&
+      chunkFrames == currentChunkFrames_) {
     return;
   }
 
   setMuted(true);
   teardownChannel();
 
+  const size_t dmaFrameNum = chooseDmaFrameNum(chunkFrames);
+  const size_t dmaDescNum =
+      std::max<size_t>(4, kTargetTotalDmaFrames / dmaFrameNum);
+
   i2s_chan_config_t chanConfig =
       I2S_CHANNEL_DEFAULT_CONFIG(config_.port, I2S_ROLE_MASTER);
-  // i2s_channel_write() blocks until the DMA queue has room - kDmaDescNum
-  // sets how much hardware buffering absorbs write() scheduling jitter
-  // before that blocking becomes audible as a stall.
-  chanConfig.dma_desc_num = kDmaDescNum;
-  chanConfig.dma_frame_num = kDmaFrameNum;
+  chanConfig.dma_desc_num = dmaDescNum;
+  chanConfig.dma_frame_num = dmaFrameNum;
   chanConfig.auto_clear = true;
   esp_err_t err = i2s_new_channel(&chanConfig, &txChan_, nullptr);
   if (err != ESP_OK) {
@@ -104,6 +124,7 @@ void AudioSinkI2S::configure(uint32_t sampleRate) {
   }
 
   currentSampleRate_ = sampleRate;
+  currentChunkFrames_ = chunkFrames;
   primeSilence();
   setMuted(false);
 }

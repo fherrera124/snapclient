@@ -160,6 +160,7 @@ std::optional<CodecHeaderMessage> CodecHeaderMessage::parse(
     }
   } else if (name == "flac") {
     m.codec = Codec::Flac;
+    m.flacPayload.assign(codecPayload, codecPayload + payloadLen);
   } else {
     m.codec = Codec::None;
   }
