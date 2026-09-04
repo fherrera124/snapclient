@@ -1,217 +1,187 @@
 # Snapcast client for ESP32
 
-### Synchronous Multiroom audio streaming client for [Snapcast](https://github.com/badaix/snapcast) ported to ESP32
+### Synchronous multiroom audio streaming client for [Snapcast](https://github.com/badaix/snapcast)
+
+A C++ rewrite of the ESP32 snapclient. The audio path, the Snapcast
+protocol and the sync algorithm live in a portable library that builds and
+runs on a desktop; only the I2S output, the timer, WiFi provisioning and NVS
+are ESP-IDF specific.
 
 ## Feature list
-- FLAC, OPUS and PCM decoding currently supported
-- Wifi setup from menuconfig
-- WiFi provisioning via [ImprovWifi via Serial](https://www.improv-wifi.com/) (e.g. via [this link](https://web.esphome.io/))<br>
-  Ensure your browser supports this, Chrome or Edge will handle serial communication just fine.
-- Auto connect to snapcast server on network
-- Buffers up to 758ms on Wroom modules (tested with 44100:16:2)
-- Buffers more than enough on Wrover modules
-- Multiroom sync delay controlled from Snapcast server (user has to ensure not to set this too high on the server)
-- DSP / EQ functionality configurable through menuconfig and partly controllable through HTTP server running on ESP client (work in progress)
 
-## Description
-I have picked up the work from [bridadan](https://github.com/bridadan/libsnapcast) and [jorgenkraghjakobsen](https://github.com/jorgenkraghjakobsen/snapclient)
-towards a ESP32 Snapcast client. It is a full featured snapcast client which
-supports the codecs FLAC, OPUS and PCM 16bit audio streams with sample rates
-up to 48Khz maybe more, I didn't test.
+- Snapcast protocol client with server-clock sync (Kalman offset/drift
+  filter, sliding-median age control, sample-level correction)
+- PCM, Opus and FLAC streams
+- Software DSP: stereo, biamp, bass boost, bass/treble EQ
+- Web interface and HTTP API for settings, on port 80 by default
+- WiFi provisioning over [Improv Serial](https://www.improv-wifi.com/)
+- mDNS discovery of the Snapcast server
+- Remote logging over UDP
+- Optional TAS5805M amplifier control over I2C
+- Host build with unit tests, no hardware required
 
-Please check out the task list and feel free to fill in.
+## Layout
 
-I dropped the usage of ADF completely but copied stripped down, needed components to this project (using <b>ESP-ADF v2.6</b>).
-This was necessary because ADF was using flac in closed source precompiled library
-which made it impossible to get good results for multiroom syncing.
-
-### Codebase
-
-The codebase is split into components and build on <b>ESP-IDF v5.5.1</b> (tested with v5.1.5 and v5.5.1, but any v5.x should work). I still
-have some refactoring on the todo list as the concept has started to settle and
-allow for new features can be added in a structured manner. In the code you
-will find parts that are only partly related features and still not on the task
-list. Also there is a lot of code clean up needed, as there is quite some dead code too.
-
-Components
- - audio-board : taken from ADF, stripped down to strictly necessary parts for playback
- - audio-hal : taken from ADF, stripped down to strictly necessary parts for playback
-   * additional modification: es8388 driver was changed to remove a noise bug introduced by ADF upstream.
- - audio-sal : taken from ADF, stripped down to strictly necessary parts for playback
- - custom_board : generic board component to support easy integration of DACs
- - dsp_processor : Audio Processor, low pass filters, effects, etc.
- - esp-dsp : Submodule to the ESP-ADF done by David Douard
- - esp-peripherals : taken from ADF, stripped down to strictly necessary parts for usage with Lyrat v4.3
- - flac : flac audio encoder/decoder full submodule
- - opus : Opus audio coder/decoder full submodule
- - libmedian: Median Filter implementation. Many thanks to [accabog](https://github.com/accabog/MedianFilter)
- - libbuffer : Generic buffer abstraction
- - lightsnapcast :
-   * snapcast module, port of @bridadan scapcast packages decode library
-   * player module, which is responsible for sync and low level I2S control
- - net_functions :
- - ota_server :
- - protocol :
- - rtprx : Alternative RTP audio client UDP low latency also opus based
- - websocket :
- - websocket_if :
- - improv_wifi : WiFi provisioning via [ImprovWifi via Serial](https://www.improv-wifi.com/)
- - network_interface : init code for wifi module and AP connection and ethernet init code
- - ui_http_server : work in progress control interface for DSP functions
- - udp_logger: Logging submodule through UPD. Just open a terminal and `nc -klu 9999` to see the logs. Many thanks to [AchimPieters](https://github.com/AchimPieters/esp32-udp-logger) 
-
-The snapclient functionality are implemented in a task included in main - but
-should be refactored to a component at some point.
-
-I did my own syncing implementation which is different than jorgenkraghjakobsen's
-approach in the original repository, at least regarding syncing itself. I tried to
-replicate the behavior of how badaix did it for his original snapclients.
-
-The snapclient frontend handles communication with the server and after
-successfull hello handshake it dispatches packages from the server.
-Normally these packages contain messages in the following order:
-
- - SERVER_SETTING : volume, mute state, playback delay etc
- - CODEC_HEADER : Setup client audio codec (FLAC, OPUS, OGG or PCM) bitrate, n
-   channels and bits per sample
- - WIRE_CHUNK : Coded audio data, also I calculate chunk duration here after
-   decoding is done using received CODEC_HEADER parameters
- - TIME : Ping pong time keeping packages to keep track of time diff from server
-   to client
-
-Each WIRE_CHUNK of audio data comes with a timestamp in server time and clients
-can use information from TIME and SERVER_SETTING messages to determine when playback
-has to be started. We handle this using a buffer with a length that compensate for
-playback-delay, network jitter and DAC to speaker (determined through SERVER_SETTING).
-
-In this implementation I have separated the sync task to a backend on the other
-end of a freeRTOS queue. Now the front end just needs to pass on the decoded audio
-data to the queue with the server timestamp and chunk size. The backend reads
-timestamps and waits until the audio chunk has the correct playback-delay
-to be written to the DAC amplifer speaker through i2s DMA. When the backend pipeline
-is in sync, any offset gets corrected by inserting a single sample every chunk_ms,
-which is determined by the server.
-
-
-### Hardware
-You will need an ESP32 or ESP32-S2 and an I2S DAC. For pinout see the default config options in menuconfig (Audio Board).
-
-## Installation
-
-Clone this repo:
 ```
-git clone https://github.com/CarlosDerSeher/snapclient
+core/      portable library - protocol, sync, dsp, settings, web UI
+main/      ESP-IDF application - I2S sink, timer, WiFi, NVS
+external/  bell (submodule)
+reference/ ESP-ADF components kept for reference, not built
+```
+
+`core/` never includes an ESP-IDF header. It talks to the platform through
+small interfaces the application implements — `AudioSink` for output,
+`PrecisionWaiter` for the wait a lock needs, `SettingsStore` for
+persistence. That is what lets the same sync engine run under a host test.
+
+### bell
+
+[bell](https://github.com/fherrera124/bell) is vendored as a submodule and
+does most of the heavy lifting that would otherwise be ESP-IDF calls: tasks,
+sockets, an HTTP server and client, mDNS, the logger, the audio codecs and
+the DSP primitives. It presents them as ordinary C++ classes with the same
+API on the device and on a desktop.
+
+That is the reason this port is not tied to Espressif's framework. Writing
+against `bell::Task` and `bell::net::TCPSocket` instead of `xTaskCreate` and
+`lwip` keeps the interesting code — sync, buffering, decoding — free of
+`#ifdef ESP_PLATFORM`, testable off-device, and portable to another target
+if bell grows one. The few places that genuinely need the SDK are confined
+to `main/`.
+
+What a snapclient does not need is switched off at configure time
+(`BELL_DISABLE_MQTT`, `BELL_CODEC_AAC` and friends in the top-level
+`CMakeLists.txt`), so none of it reaches the binary.
+
+## Hardware
+
+Tested on a plain ESP32 (ESP32-D0WDQ6) with 4MB flash and an I2S DAC. No
+PSRAM required. Pin assignments are `idf.py menuconfig` options under
+**Snapclient Configuration**, so a different board is a config change rather
+than a code change.
+
+## Build and flash
+
+Requires ESP-IDF v5.x or v6.x (developed against v6.0.1).
+
+```
+git clone --recurse-submodules <this repo>
 cd snapclient
 ```
 
-Update third party code (opus, flac, esp-dsp, improv_wifi):
-```
-git submodule update --init
-```
-Copy one of the template sdkconfig files and rename it to sdkconfig...
-
-...on Linux:
-```
-cp sdkconfig_lyrat_v4.3 sdkconfig
-```
-
-...on Windows:
-```
-copy sdkconfig_lyrat_v4.3 sdkconfig
-```
-
-### ESP-IDF environment setup (required for configuration, compiling and flashing)
-- <b>If you're on Windows :</b> Install [ESP-IDF v5.5.1](https://github.com/espressif/esp-idf/releases/tag/v5.5.1) locally ([More info](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/windows-setup-update.html)).
-- <b>If you're on Linux (docker) :</b> Use the image for ESP-IDF by following [docker build](doc/docker_build.md) doc (you won't need any of the remaining commands/steps below up until the <b>Test</b> section then) 
-- <b>If you're on Linux :</b> follow [official Espressif](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/linux-macos-setup.html) instructions
-
-  For debian based systems you'll need to do the following:
-  ```
-  sudo apt-get install git wget flex bison gperf python3 python3-pip python3-venv cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
-  mkdir -p ~/esp
-  cd ~/esp
-  git clone -b v5.5.1 --recursive https://github.com/espressif/esp-idf.git
-  cd ~/esp/esp-idf
-  ./install.sh esp32
-  . ./export.sh
-  ```
-
-### Snapcast ESP Configuration (Non-Docker-Linux and Windows)
-
-Configure your platform:
+If you already cloned without submodules:
 
 ```
+git submodule update --init --recursive
+```
+
+Set the target and configure:
+
+```
+idf.py set-target esp32
 idf.py menuconfig
 ```
 
-<a name="config"></a>
-Choose configuration options to match your setup
-  - <b>Audio HAL :</b> Choose your audio board
-    - Lyrat (4.3, 4.2)
-    - Lyrat TD (2.2, 2.1)
-    - Lyrat Mini (1.1)
-    - KORVO DU1906
-    - ESP32-S2 Kaluga (1.2)
-    - ESP-AI-Thinker-ES8388 (2.2)
-    - Or a custom board
-  - <b>Custom Audio Board :</b> Configure your DAC and GPIO
-    - DAC Chip :
-      - TI PCM51XX/TAS57XX DAC (PCM51XX are stereo DAC in TSSOP package and TAS57XX are class-D amp in HTSSOP package. Both have i2s input and i2c control)
-      - TI PCM5102A DAC (Very basic stereo DAC WITHOUT i2c control)
-      - TI TAS5805M DAC
-      - Infineon MA120X0 (High power class-D amp in QFN package)
-      - Analog Devices ADAU1961 (Stereo DAC with multiple analog inputs in LFCSP package)
-      - Analog Devices MAX98357 (Very popular basic mono AMP without i2c control)
-      - Princton Technology PT8211
-    - DAC I2C control interface : Choose GPIO pin of your I2C line and address of the DAC. If your DAC doesn't support I2C (PCM5102A or equivalent), set them to -1.
-    - I2C master interface : GPIO pin of your DAC I2S bus.
-    - DAC interface configuration : Configure specific GPIO for your DAC functionnalities. Use `?` to have more info.
-  - <b>ESP32 DSP processor config :</b>
-    - DSP flow : Choose between Stereo, Bassboost, Bi-amp or Bass/Treble EQ. You can further configure it on the ESP web interface/
-    - Use asm version of Biquad_f32 : Optimized version of the DSP algorithm only for ESP32. Don't work on ESP32-S2
-    - Use software volume : Handle snapcast volume in the ESP. Activate this if your DAC do not provide a volume control (no I2C like PCM5102A or MAX98357)
-  - <b>WiFi Configuration :</b>
-    - WiFi Provisioning : Use Improv WiFi (e.g. via [this link](https://web.esphome.io/) on a supported browser)
-    - SSID : The SSID to connect to or the provisioning SSID.
-    - Password : The password of your WiFi network or the provisioning network.
-    - Maximum retry: Use 0 for no limit.
-  - <b>Snapclient configuration :</b>
-    - Use mDNS : The client will search on the network for the snapserver automatically. Your network must support mDNS.
-    - Snapserver host : IP address of the server if mDNS is disabled or the mDNS resolution fails.
-    - Snapserver port :  Port of your snapserver, default is 1704.
-    - Snapclient name : The name under which your ESP will appear on the Snapserver.
-    - HTTP Server Setting : The ESP creates a basic webpage. You can configure the port to view this page and configure the DSP.
-
-
-### Compile and flash
-```
-idf.py build flash monitor
-```
-
-### Merge bin to flash at 0x0 with web.esphome.io
+Under **Snapclient Configuration**, set the I2S pins for your DAC and the
+Snapserver host and port. There is no WiFi option there on purpose - see
+[WiFi provisioning](#wifi-provisioning) below.
 
 ```
-esptool.py --chip esp32  merge_bin -o merged.bin --flash_size 4MB --flash_freq 80m 0x1000 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0xd000 build/ota_data_initial.bin 0x10000 build/snapclient.bin 0x370000 build/storage.bin
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-## Test
-Setup a snapcast server on your network
+The partition table is a single 2MB factory app — over-the-air update is not
+implemented yet; see `docs/ota-plan.md`.
 
-On a linux box:
+## Host build and tests
 
-Install [Snapcast](https://github.com/badaix/snapcast) and start the server. You won't need the following command if you installed it as a service.
+`core/` builds on its own, so the protocol, sync and pool logic can be
+tested without a board:
 
-    ./snapserver
+```
+cmake -S core -B build-host -DSNAPCLIENT_CORE_BUILD_TESTS=ON
+cmake --build build-host
+./build-host/tests/sync_engine_test
+./build-host/tests/chunk_pool_test
+```
 
-Pipe some audio to the snapcast server fifo
+`sync_engine_test` drives `SyncEngine` through controlled `age` sequences;
+`chunk_pool_test` covers the decoded-chunk pool and pins `DynamicResampler`
+bit-for-bit against a reference implementation.
 
-    mplayer http://ice1.somafm.com/secretagent-128-aac -ao pcm:file=/tmp/snapfifo -af format=s16LE -srate 48000
+## Test against a server
 
-Test the server config on other known platform
+Set up a Snapcast server on your network. On a Linux box, install
+[Snapcast](https://github.com/badaix/snapcast) and start it (skip if you
+installed it as a service):
 
-    ./snapclient  from the snapcast repo
+```
+snapserver
+```
 
-Android : snapclient from the app play store
+Pipe some audio into its fifo:
+
+```
+mplayer http://ice1.somafm.com/secretagent-128-aac -ao pcm:file=/tmp/snapfifo -af format=s16LE -srate 48000
+```
+
+If the client sounds early or late against another client, that is normally
+the per-client `latency` setting in the server rather than a bug — different
+output paths genuinely have different lengths, and that setting is what
+reconciles them.
+
+### Buffer size and memory
+
+The server's `buffer` setting decides how much audio the client must hold,
+and the client's queue is sized from it. FLAC payload size depends on how
+well the material compresses, so dense music needs considerably more memory
+than speech for the same buffer. On a 4MB ESP32 without PSRAM, 500ms is
+comfortable; larger values can run the heap out on demanding material.
+
+The client says so when it happens rather than dropping audio quietly — see
+below.
+
+## Settings and the web interface
+
+Everything except the pin assignments is configurable at runtime and stored
+in NVS. Point a browser at the client's address for the settings pages, or
+use the API directly:
+
+```
+curl -s http://<client-ip>/api/settings
+curl -X POST http://<client-ip>/api/settings -d '{"server":{"host":"192.168.1.10"}}'
+```
+
+`POST /api/settings` merges — fields you leave out keep their stored value.
+Changing the server host or the hostname needs a restart (`POST
+/api/restart`); DSP and logging settings apply immediately.
+
+`GET /api/discover` browses mDNS for Snapcast servers on the network.
+
+With a TAS5805M wired to the I2C pins configured in menuconfig,
+`/api/dac/settings` and `/api/dac/faults` are registered as well, and the
+web interface grows an amplifier page.
+
+## Diagnosing dropouts
+
+Audio can be lost in a few places, and each one says so in the log,
+rate-limited, with what was lost, how much has gone, and which side is
+behind:
+
+```
+audio lost: no memory for a 3184 byte chunk (47 chunks so far, heapFree=8420) - lower the server's buffer setting
+audio lost: chunk queue full at 30 (12 chunks so far, decode is behind)
+audio starved: nothing decoded for 10ms (47 times, 0 chunks waiting) - the network is behind
+chunk pool missed for 4608 bytes (3 total, 6 slots)
+```
+
+The first three tell you whether to reach for the server's buffer setting,
+the decoder, or the network. The last one means the chunk pool is mis-sized
+for the pipeline, which is a bug worth reporting.
+
+`hard resync` lines are a different thing: the playback clock drifted past
+its threshold and the client re-locked, which is audible as a break.
 
 ## Remote logging over UDP
 
@@ -266,56 +236,18 @@ curl -X POST http://<client-ip>/api/settings \
 Both write the same three settings, and either way the lines start arriving
 immediately.
 
-## OTA update
-Update your client(s) over the air.
+## WiFi provisioning
 
->Note:<br>
->In commits [98c439d](https://github.com/CarlosDerSeher/snapclient/commit/98c439d) and [4fcf3a6](https://github.com/CarlosDerSeher/snapclient/commit/4fcf3a6) the partition table has been altered,
-so there is a chance that systems running versions of the Firmware < v0.0.3 (before 2025-12-28 22:58:54) will encounter troubles during OTA upgrade. In tests we found OTA
-works without any issues but it hasn't been tested for every possible hardware combination. So be prepared to flash using serial connection if
-something goes sideways.
+Credentials are not built into the firmware. They are sent to a running
+board over the serial port with [Improv Serial](https://www.improv-wifi.com/):
+open the page with the board connected over USB and hand it the network and
+password. `esp_wifi` stores them in flash itself and reuses them on every
+later boot and reconnect, so this is a one-time step per board.
 
-On a linux box:
+## Credits
 
-```
-cd snapclient
-idf.py build
-curl snapclient.local:8032 --data-binary @- < build/snapclient.bin
-```
-Replace `snapclient.local` with your clients IP address. If you have multiple clients you could use the Android or Web App to find out your clients IPs.
-
-## Contribute
-
-You are very welcome to help and provide [Pull
-Requests](https://docs.github.com/en/github/collaborating-with-issues-and-pull-requests/about-pull-requests)
-to the project. Use [develop](https://github.com/CarlosDerSeher/snapclient/tree/develop) branch for your PRs as this is the place where new features will go.
-
-We strongly suggest you activate [pre-commit](https://pre-commit.com) hooks in
-this git repository before starting to hack and make commits.
-
-Assuming you have `pre-commit` installed on your machine (using `pip install
-pre-commit` or, on a debian-like system, `sudo apt install pre-commit`), type:
-
-```
-:~/snapclient$ pre-commit install
-pre-commit installed at .git/hooks/pre-commit
-```
-
-Then on every `git commit`, a few sanity/formatting checks will be performed.
-
-
-## Task list
-- [ ] put kconfig to better locations in tree
-- [ ] add missing codecs (ogg)
-- [ ] dsp_processor: add equalizer
-- [ ] Control interface for equalizer (component: ui_http_server)
-- [ ] clean and polish code (remove all unused variables etc.)
-- [ ] Improve Documentation
-- [ ] Throw out ADF copied components from project tree and use CmakeLists.txt to pull in necessary files from ADF
-
-## Minor task
-- [ ] fill in missing component descriptions in Readme.md
-
-## Known issues
-- The ADF introduced a bug in `components/audio_hal/driver/es8388/es8388.c` which results in loud noise between i2s channel initialization and i2s enabling. The issue was caused by three lines setting undocumented registers. This was fixed by a simple hack in this repo: we modified the file to comment out these lines.
-- There is a hacky `ensure_noiseless` function in `player.c`, that streams silence for a short period of time, once. It was originally added to fix the aforementioned noise issue. It remains in the codebase (although the es8388 driver is fixed now) because it prevents random clicks and pops during playback, especially when `PLAYER: pcm chunk queue not created` messages occur. The root cause of the clicks and the reason why this hack works are currently unknown.
+Forked from [CarlosDerSeher/snapclient](https://github.com/CarlosDerSeher/snapclient),
+whose C implementation this port follows for the sync algorithm in
+particular, and which remains the reference for behaviour on this hardware.
+That in turn builds on
+[jorgenkraghjakobsen/snapclient](https://github.com/jorgenkraghjakobsen/snapclient).
