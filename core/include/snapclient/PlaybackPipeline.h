@@ -111,9 +111,6 @@ class PlaybackPipeline {
   // What audioSink_/queue_ were last sized for; consumeOnce() re-applies
   // both when samplesPerChunkHint_ moves off it.
   std::atomic<uint32_t> appliedChunkFrames_{kOpusSamplesPerChunk};
-  // Frames of chunks dropped before playback, by onAudioChunk() or
-  // DecoderTask - deferred here since both run off sync_'s thread.
-  std::atomic<size_t> droppedChunkFrames_{0};
   // Declared before decoder_: DecoderTask binds it and starts running
   // from its own constructor.
   DecoderTask decoder_;

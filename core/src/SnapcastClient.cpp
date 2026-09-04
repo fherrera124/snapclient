@@ -400,7 +400,7 @@ bell::Result<ChunkBuffer> SnapcastClient::decodeOpus(
   if (!decoded) {
     return nonstd::make_unexpected(decoded.error());
   }
-  return acquireChunkBuffer(decoded->pcm.data(), decoded->pcm.size());
+  return acquireChunkBufferRetrying(decoded->pcm.data(), decoded->pcm.size());
 }
 
 bell::Result<ChunkBuffer> SnapcastClient::decodeFlac(
@@ -410,7 +410,7 @@ bell::Result<ChunkBuffer> SnapcastClient::decodeFlac(
   if (!decoded) {
     return nonstd::make_unexpected(decoded.error());
   }
-  return acquireChunkBuffer(decoded->pcm.data(), decoded->pcm.size());
+  return acquireChunkBufferRetrying(decoded->pcm.data(), decoded->pcm.size());
 }
 
 void SnapcastClient::handleServerSettings(const std::byte* payload,

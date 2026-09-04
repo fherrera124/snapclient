@@ -43,7 +43,7 @@ PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
       queue_(kQueueCapacity),
       pcmQueue_(kPcmQueueCapacity),
       decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_,
-              sampleRateHz_, samplesPerChunkHint_, droppedChunkFrames_),
+              sampleRateHz_, samplesPerChunkHint_),
       client_(client),
       serverSettingsLogLimiter_(1'000'000) {}
 
@@ -142,11 +142,9 @@ void PlaybackPipeline::onAudioChunk(Codec codec, ChunkBuffer payload,
     return;
   }
 
-
+  // Drops stay unaccounted for: the gap reaches SyncEngine as a chunk
+  // timestamp that advanced with no frames written.
   if (queue_.size() >= queue_.capacity()) {
-    droppedChunkFrames_.fetch_add(
-        samplesPerChunkHint_.load(std::memory_order_relaxed),
-        std::memory_order_relaxed);
     return;
   }
 
@@ -155,15 +153,9 @@ void PlaybackPipeline::onAudioChunk(Codec codec, ChunkBuffer payload,
   item.codec = codec;
   item.codecGen = codecGeneration_.load(std::memory_order_relaxed);
   // A falsy payload (SnapcastClient couldn't allocate for it) is still
-  // queued as a silent placeholder instead of dropped outright - a dropped
-  // chunk leaves a gap in the played frame count that the server's clock
-  // doesn't have.
+  // queued - DecoderTask turns it into silence of the right length.
   item.payload = std::move(payload);
-  if (!queue_.tryPush(std::move(item))) {
-    droppedChunkFrames_.fetch_add(
-        samplesPerChunkHint_.load(std::memory_order_relaxed),
-        std::memory_order_relaxed);
-  }
+  queue_.tryPush(std::move(item));
 }
 
 size_t PlaybackPipeline::prepareForOutput(const std::byte* pcm, size_t len,
@@ -175,6 +167,10 @@ size_t PlaybackPipeline::prepareForOutput(const std::byte* pcm, size_t len,
   const size_t targetFrames =
       static_cast<size_t>(static_cast<int>(frames) + frameAdjustment);
   scratchResampled_.resize(targetFrames * 2);  // stereo
+  if (pcm == nullptr) {
+    std::fill(scratchResampled_.begin(), scratchResampled_.end(), 0);
+    return targetFrames;
+  }
   DynamicResampler::process(reinterpret_cast<const int16_t*>(pcm), frames,
                             scratchResampled_.data(), targetFrames);
   return targetFrames;
@@ -198,10 +194,10 @@ void PlaybackPipeline::lockOntoChunk(DecodedChunk firstItem, int64_t waitUs) {
   DecodedChunk item = std::move(firstItem);
   size_t offsetFrames = 0;
   for (;;) {
-    const size_t itemFrames = item.pcm.size() / kBytesPerFrame - offsetFrames;
-    const std::byte* src = item.pcm.data() + offsetFrames * kBytesPerFrame;
-    const size_t frames =
-        prepareForOutput(src, itemFrames * kBytesPerFrame, /*frameAdjustment=*/0);
+    const size_t itemFrames = item.frames() - offsetFrames;
+    const size_t frames = prepareForOutput(item.dataAt(offsetFrames),
+                                           itemFrames * kBytesPerFrame,
+                                           /*frameAdjustment=*/0);
     const size_t requestedBytes = frames * kBytesPerFrame;
     const size_t accepted = audioSink_.preload(
         reinterpret_cast<const std::byte*>(scratchResampled_.data()),
@@ -243,19 +239,6 @@ void PlaybackPipeline::consumeOnce() {
     appliedChunkFrames_.store(samplesPerChunk, std::memory_order_relaxed);
   }
 
-  // Applied here, not in onAudioChunk() - see droppedChunkFrames_'s comment.
-  // Only consumed (reset) while playing - onAudioChunk() keeps running on
-  // its own thread during a resync search, so drops from that window must
-  // stay accounted for until there's a sync_ to actually apply them to,
-  // rather than being reset and lost.
-  if (sync_.isPlaying()) {
-    const size_t droppedFrames =
-        droppedChunkFrames_.exchange(0, std::memory_order_relaxed);
-    if (droppedFrames > 0) {
-      sync_.onFramesWritten(droppedFrames);
-    }
-  }
-
   DecodedChunk item;
   size_t offsetFrames = 0;
   size_t queueDepth = 0;
@@ -280,8 +263,8 @@ void PlaybackPipeline::consumeOnce() {
       item.serverTimeUs +
       static_cast<int64_t>(offsetFrames) * 1'000'000LL /
           sampleRateHz_.load(std::memory_order_relaxed);
-  const std::byte* pcm = item.pcm.data() + offsetFrames * kBytesPerFrame;
-  const size_t pcmLen = item.pcm.size() - offsetFrames * kBytesPerFrame;
+  const std::byte* pcm = item.dataAt(offsetFrames);
+  const size_t pcmLen = (item.frames() - offsetFrames) * kBytesPerFrame;
 
   const int32_t dacLatencyUs = static_cast<int32_t>(dacFixedLatencyMs_) * 1000;
 

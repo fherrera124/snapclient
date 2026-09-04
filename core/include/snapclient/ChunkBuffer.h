@@ -45,6 +45,10 @@ ChunkBuffer acquireChunkBuffer(size_t len);
 // failure/allocation behavior as the size-only overload above.
 ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len);
 
+// As above, but retries for a few tens of milliseconds, letting chunks
+// already playing free the block this needs. Blocks: decoder thread only.
+ChunkBuffer acquireChunkBufferRetrying(const std::byte* src, size_t len);
+
 // A cheap counter read (no heap walk) - safe to call from a hot per-chunk
 // path. 0 on host builds (no esp_heap_caps.h there).
 size_t chunkHeapFreeBytes();

@@ -1,7 +1,9 @@
 #include "snapclient/ChunkBuffer.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
@@ -14,6 +16,10 @@ namespace {
 // never approach this - defense against a corrupt or malicious
 // caller-supplied len, not a functional ceiling.
 constexpr size_t kMaxChunkBytes = 8192;
+
+// A buffer frees each time a chunk finishes playing, so a couple of chunk
+// durations is the useful ceiling.
+constexpr int kAcquireRetries = 50;
 
 #ifdef ESP_PLATFORM
 std::byte* allocateChunkMemory(size_t len) {
@@ -97,6 +103,16 @@ ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len) {
     std::memcpy(buf.data(), src, len);
   }
   return buf;
+}
+
+ChunkBuffer acquireChunkBufferRetrying(const std::byte* src, size_t len) {
+  for (int i = 0; i < kAcquireRetries; ++i) {
+    if (ChunkBuffer buf = acquireChunkBuffer(src, len)) {
+      return buf;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return {};
 }
 
 size_t chunkHeapFreeBytes() {

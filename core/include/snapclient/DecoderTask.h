@@ -29,6 +29,17 @@ struct QueuedChunk {
 struct DecodedChunk {
   int64_t serverTimeUs = 0;
   ChunkBuffer pcm;
+  // Frames to emit as zeros when pcm carries no buffer - a chunk that
+  // can't be decoded still has to occupy its slot in the timeline.
+  size_t silentFrames = 0;
+
+  size_t frames() const {
+    return pcm ? pcm.size() / kBytesPerFrame : silentFrames;
+  }
+  // nullptr for a silent placeholder - the output path zero-fills instead.
+  const std::byte* dataAt(size_t offsetFrames) const {
+    return pcm ? pcm.data() + offsetFrames * kBytesPerFrame : nullptr;
+  }
 };
 
 // Pulls raw chunks off rawQueue, decodes (or substitutes silence), applies
@@ -44,8 +55,7 @@ class DecoderTask : public bell::Task {
               BoundedQueue<DecodedChunk>& pcmQueue,
               std::atomic<uint32_t>& codecGeneration, SnapcastClient& client,
               DspProcessor& dsp, std::atomic<uint32_t>& sampleRateHz,
-              std::atomic<uint32_t>& samplesPerChunkHint,
-              std::atomic<size_t>& droppedChunkFrames);
+              std::atomic<uint32_t>& samplesPerChunkHint);
 
  protected:
   void runTask() override;
@@ -59,9 +69,6 @@ class DecoderTask : public bell::Task {
   std::atomic<uint32_t>& sampleRateHz_;
   // Real samples-per-chunk of the last chunk decoded, written every chunk.
   std::atomic<uint32_t>& samplesPerChunkHint_;
-  // Frames of chunks dropped here for lack of memory - without adding them
-  // on, the playback clock falls a chunk behind server time for good.
-  std::atomic<size_t>& droppedChunkFrames_;
 };
 
 }  // namespace snapclient
