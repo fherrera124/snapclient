@@ -41,8 +41,7 @@ class SyncEngine {
                            int64_t nowUs);
   bool latencyReady() const;
 
-  // Call once per chunk, before writing it. queueDepth is how many chunks
-  // (including this one) are currently pending. dacLatencyUs is a
+  // Call once per chunk, before writing it. dacLatencyUs is a
   // parameter, not settings-cached state, because it can legitimately
   // change every call (e.g. an output sink reporting real, current DMA
   // ring occupancy) - caching it would mean either recomputing
@@ -54,8 +53,8 @@ class SyncEngine {
   // minLockLeadUs is how far ahead a chunk must be due before this
   // commits to it; 0 accepts any chunk not already late.
   SyncResult evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
-                      size_t queueDepth, int32_t dacLatencyUs,
-                      size_t chunkFrames, int64_t minLockLeadUs);
+                      int32_t dacLatencyUs, size_t chunkFrames,
+                      int64_t minLockLeadUs);
 
   // Call after writing a chunk (or after a WaitMore/DropLate outcome,
   // frameCount=0), so the virtual playback clock stays accurate.

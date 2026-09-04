@@ -42,8 +42,8 @@ void SyncEngine::reset() {
 }
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
-                                size_t queueDepth, int32_t dacLatencyUs,
-                                size_t chunkFrames, int64_t minLockLeadUs) {
+                                int32_t dacLatencyUs, size_t chunkFrames,
+                                int64_t minLockLeadUs) {
   const int64_t diffToServer = timeFilter_.offsetAt(nowUs);
   const int64_t serverNowUs = nowUs + diffToServer;
   const int64_t bufferUs = int64_t{bufferMs_} * 1000;
@@ -70,13 +70,6 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
     result.decision = PlayDecision::DropLate;
     result.chunksToSkip = chunksToSkip;
     return result;
-  }
-
-  if (queueDepth == 0) {
-    playing_ = false;
-    shortMedian_.clear();
-    miniMedian_.clear();
-    return {PlayDecision::DropLate, 0, 0, true};
   }
 
   // Both sides are write frontiers, so the DMA backlog sits on both and

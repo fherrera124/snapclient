@@ -258,16 +258,16 @@ void PlaybackPipeline::consumeOnce() {
 
   DecodedChunk item;
   size_t offsetFrames = 0;
-  size_t queueDepth = 0;
+  bool haveChunk = false;
   if (pendingChunk_) {
     item = std::move(pendingChunk_->chunk);
     offsetFrames = pendingChunk_->framesConsumed;
     pendingChunk_.reset();
-    queueDepth = queue_.size() + pcmQueue_.size() + 1;
+    haveChunk = true;
   } else if (pcmQueue_.tryPop(item, 10)) {
-    queueDepth = queue_.size() + pcmQueue_.size() + 1;
+    haveChunk = true;
   }
-  if (queueDepth == 0) {
+  if (!haveChunk) {
     // tryPop() already waited up to 10ms internally on a miss - woken
     // early as soon as DecoderTask pushes something.
     if (sync_.isPlaying()) {
@@ -295,9 +295,8 @@ void PlaybackPipeline::consumeOnce() {
 
   const int32_t dacLatencyUs = static_cast<int32_t>(dacFixedLatencyMs_) * 1000;
 
-  auto result = sync_.evaluate(itemServerTimeUs, nowUs(), queueDepth,
-                               dacLatencyUs, pcmLen / kBytesPerFrame,
-                               minLockLeadUs());
+  auto result = sync_.evaluate(itemServerTimeUs, nowUs(), dacLatencyUs,
+                               pcmLen / kBytesPerFrame, minLockLeadUs());
 
   if (result.decision == PlayDecision::WaitMore) {
     lockOntoChunk(std::move(item), result.waitUs);

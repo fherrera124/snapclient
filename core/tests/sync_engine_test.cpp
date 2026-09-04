@@ -47,10 +47,10 @@ class SteadyStateDriver {
 
   // One evaluate() call whose `age` equals ageUs exactly, then advances the
   // virtual playback clock by one test chunk.
-  SyncResult step(int64_t ageUs, size_t queueDepth) {
+  SyncResult step(int64_t ageUs) {
     const int64_t actual = actualPlayLocalUs();
     const int64_t chunkServerTimeUs = actual - ageUs - bufferUs_;
-    auto result = engine_.evaluate(chunkServerTimeUs, actual, queueDepth,
+    auto result = engine_.evaluate(chunkServerTimeUs, actual,
                                    /*dacLatencyUs=*/0, kFramesPerTestChunk,
                                    /*minLockLeadUs=*/0);
     engine_.onFramesWritten(kFramesPerTestChunk);
@@ -83,7 +83,7 @@ void test_hard_resync_fires_past_threshold() {
   // and the hard-resync check ever runs.
   SyncResult result;
   for (int i = 0; i < 99; i++) {
-    result = driver.step(kHardResyncThresholdUs + 1, /*queueDepth=*/1);
+    result = driver.step(kHardResyncThresholdUs + 1);
   }
   CHECK(result.decision == PlayDecision::DropLate);
   CHECK(result.hardResync);
@@ -95,7 +95,7 @@ void test_hard_resync_does_not_fire_under_threshold() {
   driver.start(/*nowUs=*/1'000'000);
 
   for (int i = 0; i < 150; i++) {
-    auto result = driver.step(kHardResyncThresholdUs - 1, /*queueDepth=*/1);
+    auto result = driver.step(kHardResyncThresholdUs - 1);
     CHECK(result.decision == PlayDecision::Play);
     CHECK(!result.hardResync);
   }
@@ -110,13 +110,13 @@ void test_steady_state_gate_requires_agreement() {
 
   // Fill both medians with a steady early-running age.
   for (int i = 0; i < 99; i++) {
-    driver.step(-200, /*queueDepth=*/1);
+    driver.step(-200);
   }
 
   // This call's own instantaneous age disagrees with the (still mostly
   // -200) medians - the gate must reject it despite shortM/miniM alone
   // still looking like a clear early-running case.
-  auto result = driver.step(0, /*queueDepth=*/1);
+  auto result = driver.step(0);
   CHECK(result.frameAdjustment == 0);
 }
 
@@ -141,10 +141,9 @@ void test_lock_with_preloaded_frames_seeds_virtual_clock() {
   const int64_t evalNowUs = kNowUs + preloadedUs;
   const int64_t chunkServerTimeUs = evalNowUs - kBufferUs;
 
-  auto result =
-      engine.evaluate(chunkServerTimeUs, evalNowUs, /*queueDepth=*/1,
-                      /*dacLatencyUs=*/0, kFramesPerTestChunk,
-                      /*minLockLeadUs=*/0);
+  auto result = engine.evaluate(chunkServerTimeUs, evalNowUs,
+                                /*dacLatencyUs=*/0, kFramesPerTestChunk,
+                                /*minLockLeadUs=*/0);
   CHECK(result.decision == PlayDecision::Play);
   CHECK(result.ageUs == 0);
 }
@@ -162,7 +161,7 @@ void test_initial_sync_drops_a_due_chunk_instead_of_playing_it() {
   engine.onSettingsChanged(kBufferMs, kSampleRate);
 
   // age == 0 exactly: right on time, not early - still must not play.
-  auto result = engine.evaluate(kNowUs - kBufferUs, kNowUs, /*queueDepth=*/1,
+  auto result = engine.evaluate(kNowUs - kBufferUs, kNowUs,
                                 /*dacLatencyUs=*/0, kFramesPerTestChunk,
                                 /*minLockLeadUs=*/0);
   CHECK(result.decision == PlayDecision::DropLate);
