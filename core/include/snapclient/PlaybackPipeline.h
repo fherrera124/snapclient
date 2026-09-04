@@ -83,9 +83,7 @@ class PlaybackPipeline {
   void applyQueueCapacity();
 
   // queue_'s capacity before real settings arrive - see
-  // applyQueueCapacity(). A chunk acquireChunkBuffer() couldn't get memory
-  // for still carries useful timing (it falls back to the
-  // accounted-silence path in onAudioChunk below).
+  // applyQueueCapacity().
   static constexpr size_t kQueueCapacity = 40;
   // Decode (~12ms avg) is slower than dsp+i2s-write (~6.5-7.5ms combined),
   // so 2 slots is enough for one-chunk-ahead overlap between DecoderTask
