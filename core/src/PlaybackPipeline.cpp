@@ -312,15 +312,18 @@ void PlaybackPipeline::consumeOnce() {
     // Tell SyncEngine the actual frames just written
     sync_.onFramesWritten(targetFrames);
   } else {
-    // DropLate. During the initial-sync search, chunksToSkip more queued
-    // chunks are already stale too - drop them all now in one pass. 0
-    // for the hard-resync DropLate cases (queue starvation, threshold
-    // exceeded).
-    DecodedChunk discard;
-    for (int i = 0; i < result.chunksToSkip; i++) {
-      if (!pcmQueue_.tryPop(discard, 1)) {
-        break;
-      }
+    // DropLate. chunksToSkip more queued chunks are already stale too -
+    // drop them in one pass; 0 when the hard-resync threshold fired.
+    // The count comes out of both queues: pcmQueue_ holds only what decode
+    // has run ahead by, and the rest of the backlog is in queue_.
+    int remaining = result.chunksToSkip;
+    DecodedChunk decodedDiscard;
+    while (remaining > 0 && pcmQueue_.tryPop(decodedDiscard, 0)) {
+      --remaining;
+    }
+    QueuedChunk encodedDiscard;
+    while (remaining > 0 && queue_.tryPop(encodedDiscard, 0)) {
+      --remaining;
     }
     std::this_thread::yield();
   }
