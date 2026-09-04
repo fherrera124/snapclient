@@ -78,12 +78,10 @@ class SnapcastClient : public bell::Task {
   // codec change (which tears down and recreates the decoder) via a
   // mutex, since that now happens on this object's own task while this
   // is expected to be called from the caller's playback thread instead.
-  bell::Result<size_t> decodeOpus(tcb::span<const std::byte> encoded,
-                                  std::byte* out, size_t outCapacity);
+  bell::Result<ChunkBuffer> decodeOpus(tcb::span<const std::byte> encoded);
 
   // Same contract as decodeOpus(), for the Flac codec.
-  bell::Result<size_t> decodeFlac(tcb::span<const std::byte> encoded,
-                                  std::byte* out, size_t outCapacity);
+  bell::Result<ChunkBuffer> decodeFlac(tcb::span<const std::byte> encoded);
 
   // Samples-per-chunk from the codec header: 960 for Opus, STREAMINFO's
   // max block size for Flac. Set before any chunk is decoded, never

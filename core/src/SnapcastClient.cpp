@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstring>
 #include <new>
 #include <optional>
 #include <thread>
@@ -302,20 +301,6 @@ bool SnapcastClient::handleCodecHeader(const std::byte* payload, size_t len) {
     pcmFormat_ = flacCodec_.getAudioFormat();
     expectedSamplesPerChunk_ = flacCodec_.getMaxBlockSize();
 
-    // decodeFlac()'s output lands in DecoderTask's fixed-size decodeBuf -
-    // reject the stream now rather than have every decode() call fail
-    // (silently falling back to silence) once chunks start arriving.
-    const size_t maxDecodedBytes = static_cast<size_t>(
-        expectedSamplesPerChunk_ * pcmFormat_.getNumChannels() *
-        sizeof(int16_t));
-    if (maxDecodedBytes > kMaxDecodedChunkBytes) {
-      BELL_LOG(error, LOG_TAG,
-               "flac max block size {} ({} ch) needs {} bytes, decode "
-               "buffer only holds {}",
-               expectedSamplesPerChunk_, pcmFormat_.getNumChannels(),
-               maxDecodedBytes, kMaxDecodedChunkBytes);
-      return false;
-    }
   } else {
     auto sampleRate = toSampleRate(header->sampleRate);
     if (!sampleRate) {
@@ -406,34 +391,26 @@ bool SnapcastClient::readAndHandleWireChunk(uint32_t totalSize) {
   return true;
 }
 
-bell::Result<size_t> SnapcastClient::decodeOpus(
-    tcb::span<const std::byte> encoded, std::byte* out, size_t outCapacity) {
+bell::Result<ChunkBuffer> SnapcastClient::decodeOpus(
+    tcb::span<const std::byte> encoded) {
+  // Buffer acquired under the lock: decode() writes into storage the codec
+  // owns, which the next decode() call reuses.
   std::lock_guard<std::mutex> lock(opusMutex_);
   auto decoded = opusCodec_.decode(encoded);
   if (!decoded) {
     return nonstd::make_unexpected(decoded.error());
   }
-  if (decoded->pcm.size() > outCapacity) {
-    return nonstd::make_unexpected(
-        bell::audio::make_error_code(bell::audio::Errc::InvalidFormat));
-  }
-  std::memcpy(out, decoded->pcm.data(), decoded->pcm.size());
-  return decoded->pcm.size();
+  return acquireChunkBuffer(decoded->pcm.data(), decoded->pcm.size());
 }
 
-bell::Result<size_t> SnapcastClient::decodeFlac(
-    tcb::span<const std::byte> encoded, std::byte* out, size_t outCapacity) {
+bell::Result<ChunkBuffer> SnapcastClient::decodeFlac(
+    tcb::span<const std::byte> encoded) {
   std::lock_guard<std::mutex> lock(flacMutex_);
   auto decoded = flacCodec_.decode(encoded);
   if (!decoded) {
     return nonstd::make_unexpected(decoded.error());
   }
-  if (decoded->pcm.size() > outCapacity) {
-    return nonstd::make_unexpected(
-        bell::audio::make_error_code(bell::audio::Errc::InvalidFormat));
-  }
-  std::memcpy(out, decoded->pcm.data(), decoded->pcm.size());
-  return decoded->pcm.size();
+  return acquireChunkBuffer(decoded->pcm.data(), decoded->pcm.size());
 }
 
 void SnapcastClient::handleServerSettings(const std::byte* payload,

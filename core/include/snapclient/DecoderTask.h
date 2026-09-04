@@ -16,9 +16,6 @@ namespace snapclient {
 class SnapcastClient;
 
 constexpr size_t kBytesPerFrame = 2 * sizeof(int16_t);  // stereo S16
-// Upper bound on decodeBuf: 4096 samples/channel covers libFLAC's largest
-// block at snapserver's compression levels.
-constexpr size_t kMaxDecodedChunkBytes = 4096 * kBytesPerFrame;
 
 struct QueuedChunk {
   int64_t serverTimeUs = 0;
