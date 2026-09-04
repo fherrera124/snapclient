@@ -213,6 +213,59 @@ Test the server config on other known platform
 
 Android : snapclient from the app play store
 
+## Remote logging over UDP
+
+Every log line the firmware produces can also be sent to another machine on
+the network as a plain-text UDP datagram — one datagram per line, no ANSI
+colors, no buffering and no retry. It is meant for watching a board that is
+running normally, without a USB cable and without holding the serial port
+(which `idf.py flash` needs back anyway).
+
+It is a `bell::LoggerBackend` registered alongside the serial one, so it
+carries exactly the same lines at the same levels, not a separate feed. The
+target is stored in NVS and applied the moment you save it — no rebuild and
+no restart. It is off by default; the default port is 9999.
+
+Because it is plain UDP, datagrams can be dropped or arrive out of order,
+most likely when the network is struggling, which is often exactly when you
+are reading. Treat a jump in a cumulative counter as a lost datagram rather
+than a bug. It also shares the WiFi with the audio stream, so a burst of
+warnings is not free.
+
+### Listening on Linux
+
+`socat` is the more reliable of the two, since `nc` in UDP mode latches onto
+the first sender and some builds stop printing after a pause:
+
+```
+socat -u UDP-RECV:9999 -
+```
+
+```
+nc -ul 9999
+```
+
+### Pointing the board at it
+
+Find the address the board should send to:
+
+```
+ip -4 -o addr show scope global
+```
+
+Then open the client's web interface, go to **Device** → **Remote logging**,
+tick *Send logs over UDP*, fill in that address and port 9999, and save.
+
+The same thing over the API, if you prefer:
+
+```
+curl -X POST http://<client-ip>/api/settings \
+  -d '{"logging":{"enabled":true,"udpHost":"192.168.1.50","udpPort":9999}}'
+```
+
+Both write the same three settings, and either way the lines start arriving
+immediately.
+
 ## OTA update
 Update your client(s) over the air.
 
