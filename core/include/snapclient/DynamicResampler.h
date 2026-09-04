@@ -8,12 +8,20 @@ class DynamicResampler {
  public:
   // Resamples 16-bit stereo PCM.
   // Converts 'inFrames' to 'outFrames' by smoothly compressing or stretching the waveform.
+  //
+  // 'in' is read only as whole aligned 32-bit words - one stereo frame is
+  // exactly four bytes - so it may point into memory that rejects narrower
+  // access, such as a pool slot in ESP32 IRAM.
   static size_t process(const int16_t* in, size_t inFrames,
                         int16_t* out, size_t outFrames) {
+    const auto* frames = reinterpret_cast<const uint32_t*>(in);
+
     // Direct passthrough if SyncEngine set frameAdjustment = 0
     if (inFrames == outFrames) {
-      for (size_t i = 0; i < inFrames * 2; ++i) {
-        out[i] = in[i];
+      for (size_t i = 0; i < inFrames; ++i) {
+        const uint32_t frame = frames[i];
+        out[i * 2] = static_cast<int16_t>(frame & 0xFFFF);
+        out[i * 2 + 1] = static_cast<int16_t>(frame >> 16);
       }
       return outFrames;
     }
@@ -30,14 +38,17 @@ class DynamicResampler {
       // Prevent overflow on the last frame by interpolating with itself
       uint32_t nextIndex = (index + 1 < inFrames) ? index + 1 : index;
 
+      const uint32_t f0 = frames[index];
+      const uint32_t f1 = frames[nextIndex];
+
       // Interpolate left channel
-      int32_t l0 = in[index * 2];
-      int32_t l1 = in[nextIndex * 2];
+      int32_t l0 = static_cast<int16_t>(f0 & 0xFFFF);
+      int32_t l1 = static_cast<int16_t>(f1 & 0xFFFF);
       out[i * 2] = static_cast<int16_t>(l0 + (((l1 - l0) * static_cast<int32_t>(frac)) >> 16));
 
       // Interpolate right channel
-      int32_t r0 = in[index * 2 + 1];
-      int32_t r1 = in[nextIndex * 2 + 1];
+      int32_t r0 = static_cast<int16_t>(f0 >> 16);
+      int32_t r1 = static_cast<int16_t>(f1 >> 16);
       out[i * 2 + 1] = static_cast<int16_t>(r0 + (((r1 - r0) * static_cast<int32_t>(frac)) >> 16));
 
       phase += step;

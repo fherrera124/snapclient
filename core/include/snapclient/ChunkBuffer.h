@@ -25,12 +25,15 @@ class ChunkBuffer {
  private:
   friend ChunkBuffer acquireChunkBuffer(size_t len);
   friend ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len);
-  ChunkBuffer(std::byte* data, size_t size)
-      : data_(data), size_(size), valid_(true) {}
+  friend ChunkBuffer acquirePooledChunkBuffer(const std::byte* src, size_t len);
+  ChunkBuffer(std::byte* data, size_t size, bool pooled = false)
+      : data_(data), size_(size), valid_(true), pooled_(pooled) {}
 
   std::byte* data_ = nullptr;
   size_t size_ = 0;
   bool valid_ = false;
+  // Returns to the chunk pool instead of the heap when destroyed.
+  bool pooled_ = false;
 };
 
 // Reserves a new heap buffer sized exactly to len, left uninitialized - for
@@ -45,9 +48,22 @@ ChunkBuffer acquireChunkBuffer(size_t len);
 // failure/allocation behavior as the size-only overload above.
 ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len);
 
-// As above, but retries for a few tens of milliseconds, letting chunks
-// already playing free the block this needs. Blocks: decoder thread only.
-ChunkBuffer acquireChunkBufferRetrying(const std::byte* src, size_t len);
+// Reserves slotCount buffers of slotBytes each for decoded pcm, returning
+// how many it got. Slots come from a 32-bit-only heap region where one
+// exists (ESP32 IRAM), so a pooled buffer may only be accessed as whole
+// aligned 32-bit words. A no-op once configured for slotBytes; refuses to
+// re-allocate while a slot is still out.
+size_t configureChunkPool(size_t slotBytes, size_t slotCount);
+
+// Slots currently reserved, and how many of those came from the
+// 32-bit-only region.
+size_t chunkPoolSlots();
+size_t chunkPoolWordOnlySlots();
+
+// Copies src[0..len) into a pool slot; len must be a multiple of 4 and fit
+// one. Warns and falls back to the heap on a miss, which means the pool is
+// mis-sized for the pipeline.
+ChunkBuffer acquirePooledChunkBuffer(const std::byte* src, size_t len);
 
 // A cheap counter read (no heap walk) - safe to call from a hot per-chunk
 // path. 0 on host builds (no esp_heap_caps.h there).

@@ -4,7 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <bell/audio/Common.h>
 #include <bell/utils/Task.h>
+#include <tcb/span.hpp>
 
 #include "snapclient/BoundedQueue.h"
 #include "snapclient/ChunkBuffer.h"
@@ -61,6 +63,9 @@ class DecoderTask : public bell::Task {
   void runTask() override;
 
  private:
+  ChunkBuffer processAndStore(tcb::span<std::byte> pcm,
+                              bell::audio::SampleRate sampleRate);
+
   BoundedQueue<QueuedChunk>& rawQueue_;
   BoundedQueue<DecodedChunk>& pcmQueue_;
   std::atomic<uint32_t>& codecGeneration_;

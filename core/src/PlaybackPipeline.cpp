@@ -45,7 +45,9 @@ PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
       decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_,
               sampleRateHz_, samplesPerChunkHint_),
       client_(client),
-      serverSettingsLogLimiter_(1'000'000) {}
+      serverSettingsLogLimiter_(1'000'000),
+      queueFullLogLimiter_(kLossLogIntervalUs),
+      starvationLogLimiter_(kLossLogIntervalUs) {}
 
 void PlaybackPipeline::applyDspSettings(DspFlow flow,
                                         const DspFilterParams& params) {
@@ -90,6 +92,12 @@ void PlaybackPipeline::onCodecReady(Codec codec,
   // Reserved once so prepareForOutput()'s resize() never allocates on the
   // audio path; +8 covers frameAdjustment's per-chunk swing.
   scratchResampled_.reserve((expectedSamplesPerChunk + 8) * 2);
+  const size_t poolSlots =
+      configureChunkPool(expectedSamplesPerChunk * kBytesPerFrame,
+                         kPcmQueueCapacity + kPcmBuffersInFlight);
+  BELL_LOG(info, logTag_, "chunk pool: {} slots of {} bytes, {} word-only",
+           poolSlots, expectedSamplesPerChunk * kBytesPerFrame,
+           chunkPoolWordOnlySlots());
   lastSyncBufferMs_ = bufferMs_;
   lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
   sync_.onSettingsChanged(bufferMs_, fmt.getSampleRateValue());
@@ -145,6 +153,15 @@ void PlaybackPipeline::onAudioChunk(Codec codec, ChunkBuffer payload,
   // Drops stay unaccounted for: the gap reaches SyncEngine as a chunk
   // timestamp that advanced with no frames written.
   if (queue_.size() >= queue_.capacity()) {
+    ++queueFullDrops_;
+    if (queueFullLogLimiter_.due(nowUs())) {
+      // A blocked re-lock backpressures the decoder through pcmQueue_,
+      // so a full queue then is not decode's fault.
+      BELL_LOG(warn, logTag_,
+               "audio lost: chunk queue full at {} ({} chunks so far, {})",
+               queue_.capacity(), queueFullDrops_,
+               sync_.isPlaying() ? "decode is behind" : "waiting to re-lock");
+    }
     return;
   }
 
@@ -253,6 +270,16 @@ void PlaybackPipeline::consumeOnce() {
   if (queueDepth == 0) {
     // tryPop() already waited up to 10ms internally on a miss - woken
     // early as soon as DecoderTask pushes something.
+    if (sync_.isPlaying()) {
+      ++starvedPolls_;
+      if (starvationLogLimiter_.due(nowUs())) {
+        BELL_LOG(warn, logTag_,
+                 "audio starved: nothing decoded for 10ms ({} times, {} "
+                 "chunks waiting) - {} is behind",
+                 starvedPolls_, queue_.size(),
+                 queue_.size() == 0 ? "the network" : "decode");
+      }
+    }
     return;
   }
 

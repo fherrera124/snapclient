@@ -370,8 +370,18 @@ bool SnapcastClient::readAndHandleWireChunk(uint32_t totalSize) {
       return false;
     }
   } else if (header->payloadSize > 0) {
-    // No codec yet, or the allocation above failed under memory pressure -
-    // still must drain these bytes off the socket, or the next message's
+    // Nothing is playable before the codec header, so that is not a loss.
+    if (receivedCodecHeader_) {
+      ++payloadAllocFailures_;
+      if (payloadLogLimiter_.due(nowUs())) {
+        BELL_LOG(warn, LOG_TAG,
+                 "audio lost: no memory for a {} byte chunk ({} chunks so "
+                 "far, heapFree={}) - lower the server's buffer setting",
+                 header->payloadSize, payloadAllocFailures_,
+                 chunkHeapFreeBytes());
+      }
+    }
+    // Still must drain these bytes off the socket, or the next message's
     // header would be read from the middle of this one.
     std::array<std::byte, 256> discard;
     size_t remaining = header->payloadSize;
@@ -391,26 +401,24 @@ bool SnapcastClient::readAndHandleWireChunk(uint32_t totalSize) {
   return true;
 }
 
-bell::Result<ChunkBuffer> SnapcastClient::decodeOpus(
+bell::Result<SnapcastClient::DecodedView> SnapcastClient::decodeOpus(
     tcb::span<const std::byte> encoded) {
-  // Buffer acquired under the lock: decode() writes into storage the codec
-  // owns, which the next decode() call reuses.
-  std::lock_guard<std::mutex> lock(opusMutex_);
+  std::unique_lock<std::mutex> lock(opusMutex_);
   auto decoded = opusCodec_.decode(encoded);
   if (!decoded) {
     return nonstd::make_unexpected(decoded.error());
   }
-  return acquireChunkBufferRetrying(decoded->pcm.data(), decoded->pcm.size());
+  return DecodedView(std::move(lock), decoded->pcm);
 }
 
-bell::Result<ChunkBuffer> SnapcastClient::decodeFlac(
+bell::Result<SnapcastClient::DecodedView> SnapcastClient::decodeFlac(
     tcb::span<const std::byte> encoded) {
-  std::lock_guard<std::mutex> lock(flacMutex_);
+  std::unique_lock<std::mutex> lock(flacMutex_);
   auto decoded = flacCodec_.decode(encoded);
   if (!decoded) {
     return nonstd::make_unexpected(decoded.error());
   }
-  return acquireChunkBufferRetrying(decoded->pcm.data(), decoded->pcm.size());
+  return DecodedView(std::move(lock), decoded->pcm);
 }
 
 void SnapcastClient::handleServerSettings(const std::byte* payload,

@@ -14,26 +14,11 @@
 #include "snapclient/DecoderTask.h"
 #include "snapclient/DspProcessor.h"
 #include "snapclient/PrecisionWaiter.h"
+#include "snapclient/RateLimiter.h"
 #include "snapclient/SnapcastClient.h"
 #include "snapclient/SyncEngine.h"
 
 namespace snapclient {
-
-class RateLimiter {
- public:
-  explicit RateLimiter(int64_t intervalUs) : intervalUs_(intervalUs) {}
-  bool due(int64_t nowUs) {
-    if (nowUs - lastUs_ < intervalUs_) {
-      return false;
-    }
-    lastUs_ = nowUs;
-    return true;
-  }
-
- private:
-  int64_t intervalUs_;
-  int64_t lastUs_ = 0;
-};
 
 // The five onXxx methods run on SnapcastClient's own thread; consumeOnce()
 // runs on the caller's - plain reads/writes across that boundary, no
@@ -90,6 +75,10 @@ class PlaybackPipeline {
   // and the consumer; bump if soak testing shows the consumer stalling
   // here waiting on decode.
   static constexpr size_t kPcmQueueCapacity = 2;
+  // Decoded chunks alive outside pcmQueue_: pendingChunk_, the one
+  // consumeOnce() is playing, the one DecoderTask is building, and one in
+  // transit between them.
+  static constexpr size_t kPcmBuffersInFlight = 4;
 
   const char* logTag_;
 
@@ -131,6 +120,10 @@ class PlaybackPipeline {
   int32_t lastSyncDacLatencyMs_ = 0;
 
   RateLimiter serverSettingsLogLimiter_;
+  size_t queueFullDrops_ = 0;
+  RateLimiter queueFullLogLimiter_;
+  size_t starvedPolls_ = 0;
+  RateLimiter starvationLogLimiter_;
   std::vector<int16_t> scratchResampled_;
   std::optional<PendingChunk> pendingChunk_;
 };

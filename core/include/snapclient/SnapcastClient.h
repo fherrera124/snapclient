@@ -15,6 +15,7 @@
 
 #include "snapclient/ChunkBuffer.h"
 #include "snapclient/Protocol.h"
+#include "snapclient/RateLimiter.h"
 
 namespace snapclient {
 
@@ -27,11 +28,11 @@ struct ServerSettings {
 
 // Connects to a Snapcast server (static host:port - no mDNS discovery yet),
 // does the HELLO handshake, and dispatches parsed messages via callbacks.
-// Delivers PCM and Opus payloads as received, undecoded - decoding is the
-// caller's own responsibility (via decodeOpus() below), on the caller's
+// Delivers payloads as received, undecoded - decoding is the caller's own
+// responsibility (via decodeOpus()/decodeFlac() below), on the caller's
 // own schedule, so a caller buffering many chunks ahead of playback holds
-// compact encoded data instead of one decoded PCM buffer per chunk.
-// FLAC/OGG/unknown codecs disconnect (triggers a retry, same as any other
+// compact encoded data instead of one decoded PCM buffer per chunk. Codecs
+// other than Pcm/Opus/Flac disconnect (triggers a retry, same as any other
 // connection error).
 //
 // Runs its own bell::Task; owns no playback/sync decisions - those live in
@@ -71,17 +72,30 @@ class SnapcastClient : public bell::Task {
   // cadence to a slower steady-state one once latency samples are enough.
   void setPingIntervalUs(int64_t intervalUs);
 
-  // Decodes one Opus payload delivered via onAudioChunk into out (must
-  // have room for outCapacity bytes), returning the number of PCM bytes
-  // written. Safe to call from any single thread, including one other
-  // than whichever called onAudioChunk - internally serialized against a
-  // codec change (which tears down and recreates the decoder) via a
-  // mutex, since that now happens on this object's own task while this
-  // is expected to be called from the caller's playback thread instead.
-  bell::Result<ChunkBuffer> decodeOpus(tcb::span<const std::byte> encoded);
+  // Decoded pcm sitting in storage the codec owns and reuses on its next
+  // decode. Holds the codec lock for its whole lifetime, so keep it to the
+  // shortest scope that still covers reading pcm().
+  class DecodedView {
+   public:
+    DecodedView(std::unique_lock<std::mutex> lock, tcb::span<std::byte> pcm)
+        : lock_(std::move(lock)), pcm_(pcm) {}
+    tcb::span<std::byte> pcm() const { return pcm_; }
+
+   private:
+    std::unique_lock<std::mutex> lock_;
+    tcb::span<std::byte> pcm_;
+  };
+
+  // Decodes one Opus payload delivered via onAudioChunk. Safe to call from
+  // any single thread, including one other than whichever called
+  // onAudioChunk - internally serialized against a codec change (which
+  // tears down and recreates the decoder) via a mutex, since that now
+  // happens on this object's own task while this is expected to be called
+  // from the caller's playback thread instead.
+  bell::Result<DecodedView> decodeOpus(tcb::span<const std::byte> encoded);
 
   // Same contract as decodeOpus(), for the Flac codec.
-  bell::Result<ChunkBuffer> decodeFlac(tcb::span<const std::byte> encoded);
+  bell::Result<DecodedView> decodeFlac(tcb::span<const std::byte> encoded);
 
   // Samples-per-chunk from the codec header: 960 for Opus, STREAMINFO's
   // max block size for Flac. Set before any chunk is decoded, never
@@ -118,6 +132,9 @@ class SnapcastClient : public bell::Task {
   // connectAndHandshake() resets, so a codec change (which also drops the
   // connection) would otherwise look like a first header.
   Codec lastActiveCodec_ = Codec::None;
+  // Chunk payloads that got no memory and were drained off the socket.
+  size_t payloadAllocFailures_ = 0;
+  RateLimiter payloadLogLimiter_{kLossLogIntervalUs};
 
   bool connectAndHandshake();
   bool readAndDispatchOne();

@@ -33,6 +33,14 @@ DecoderTask::DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
   startTask();
 }
 
+// dsp works on int16 samples, so it has to run on the codec's own output:
+// a pool slot may only tolerate aligned 32-bit access.
+ChunkBuffer DecoderTask::processAndStore(tcb::span<std::byte> pcm,
+                                         bell::audio::SampleRate sampleRate) {
+  dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(), sampleRate);
+  return acquirePooledChunkBuffer(pcm.data(), pcm.size());
+}
+
 void DecoderTask::runTask() {
   while (true) {
     QueuedChunk item;
@@ -44,20 +52,26 @@ void DecoderTask::runTask() {
       continue;
     }
 
+    const auto sampleRate = static_cast<bell::audio::SampleRate>(
+        sampleRateHz_.load(std::memory_order_relaxed));
+
     ChunkBuffer pcm;
     if (item.payload) {
+      const tcb::span<const std::byte> encoded(item.payload.data(),
+                                               item.payload.size());
       if (item.codec == Codec::Opus) {
-        if (auto decoded = client_.decodeOpus(tcb::span<const std::byte>(
-                item.payload.data(), item.payload.size()))) {
-          pcm = std::move(*decoded);
+        if (auto decoded = client_.decodeOpus(encoded)) {
+          pcm = processAndStore(decoded->pcm(), sampleRate);
         }
       } else if (item.codec == Codec::Flac) {
-        if (auto decoded = client_.decodeFlac(tcb::span<const std::byte>(
-                item.payload.data(), item.payload.size()))) {
-          pcm = std::move(*decoded);
+        if (auto decoded = client_.decodeFlac(encoded)) {
+          pcm = processAndStore(decoded->pcm(), sampleRate);
         }
       } else {
+        // Byte-addressable heap, so dsp can work in place here.
         pcm = std::move(item.payload);
+        dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(),
+                     sampleRate);
       }
       if (pcm) {
         samplesPerChunkHint_.store(
@@ -79,10 +93,6 @@ void DecoderTask::runTask() {
           samplesPerChunkHint_.load(std::memory_order_relaxed)});
       continue;
     }
-
-    const auto sampleRate = static_cast<bell::audio::SampleRate>(
-        sampleRateHz_.load(std::memory_order_relaxed));
-    dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(), sampleRate);
 
     pcmQueue_.push(DecodedChunk{item.serverTimeUs, std::move(pcm), 0});
   }
