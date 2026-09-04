@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <bell/audio/Common.h>
+#include <bell/audio/FlacCodec.h>
 #include <bell/audio/OpusCodec.h>
 #include <bell/net/TCPSocket.h>
 #include <bell/utils/Task.h>
@@ -80,6 +81,15 @@ class SnapcastClient : public bell::Task {
   bell::Result<size_t> decodeOpus(tcb::span<const std::byte> encoded,
                                   std::byte* out, size_t outCapacity);
 
+  // Same contract as decodeOpus(), for the Flac codec.
+  bell::Result<size_t> decodeFlac(tcb::span<const std::byte> encoded,
+                                  std::byte* out, size_t outCapacity);
+
+  // Samples-per-chunk from the codec header: 960 for Opus, STREAMINFO's
+  // max block size for Flac. Set before any chunk is decoded, never
+  // refined afterwards.
+  uint32_t expectedSamplesPerChunk() const { return expectedSamplesPerChunk_; }
+
  protected:
   void taskLoop() override;
   void wakeTask() override;
@@ -100,8 +110,16 @@ class SnapcastClient : public bell::Task {
   // handleCodecHeader) recreates the decoder, which would otherwise race
   // a caller's decodeOpus() call (a different thread).
   std::mutex opusMutex_;
+  bell::audio::FlacCodec flacCodec_;
+  // Guards flacCodec_, same reasoning as opusMutex_ above.
+  std::mutex flacMutex_;
   bell::audio::Format pcmFormat_;
   Codec activeCodec_ = Codec::None;
+  uint32_t expectedSamplesPerChunk_ = 0;
+  // Last codec set up, kept across reconnects - unlike activeCodec_, which
+  // connectAndHandshake() resets, so a codec change (which also drops the
+  // connection) would otherwise look like a first header.
+  Codec lastActiveCodec_ = Codec::None;
 
   bool connectAndHandshake();
   bool readAndDispatchOne();

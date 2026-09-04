@@ -33,9 +33,9 @@ class AudioSinkI2S : public snapclient::AudioSink {
   AudioSinkI2S(const AudioSinkI2S&) = delete;
   AudioSinkI2S& operator=(const AudioSinkI2S&) = delete;
 
-  // Tears down and recreates the I2S channel only if sampleRate differs
-  // from the last call (or this is the first call).
-  void configure(uint32_t sampleRate) override;
+  // Tears down and recreates the I2S channel only if sampleRate or
+  // chunkFrames differs from the last call (or this is the first call).
+  void configure(uint32_t sampleRate, uint32_t chunkFrames) override;
 
   void write(const std::byte* pcm, size_t len) override;
 
@@ -46,7 +46,7 @@ class AudioSinkI2S : public snapclient::AudioSink {
   void disable() override;
   void enable() override;
 
-  uint32_t ringCapacityFrames() const override;
+  uint32_t ringCapacityFrames() const override { return ringCapacityFrames_; }
 
  private:
   const char* LOG_TAG = "AudioSinkI2S";
@@ -54,6 +54,8 @@ class AudioSinkI2S : public snapclient::AudioSink {
   Config config_;
   i2s_chan_handle_t txChan_ = nullptr;
   uint32_t currentSampleRate_ = 0;
+  uint32_t currentChunkFrames_ = 0;
+  uint32_t ringCapacityFrames_ = 0;
 
   void teardownChannel();
   void primeSilence();

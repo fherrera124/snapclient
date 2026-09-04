@@ -105,6 +105,17 @@ class PlaybackPipeline {
   // Raw Hz value of sampleRate_ below - shared with DecoderTask (which
   // dsp-processes chunks on its own thread) since it needs it too.
   std::atomic<uint32_t> sampleRateHz_{44100};
+  // Best known samples-per-chunk: seeded in onCodecReady(), refined by
+  // DecoderTask from real decoded sizes.
+  std::atomic<uint32_t> samplesPerChunkHint_{kOpusSamplesPerChunk};
+  // What audioSink_/queue_ were last sized for; consumeOnce() re-applies
+  // both when samplesPerChunkHint_ moves off it.
+  std::atomic<uint32_t> appliedChunkFrames_{kOpusSamplesPerChunk};
+  // Frames of chunks dropped before playback, by onAudioChunk() or
+  // DecoderTask - deferred here since both run off sync_'s thread.
+  std::atomic<size_t> droppedChunkFrames_{0};
+  // Declared before decoder_: DecoderTask binds it and starts running
+  // from its own constructor.
   DecoderTask decoder_;
   SnapcastClient& client_;
 
@@ -125,11 +136,6 @@ class PlaybackPipeline {
   int32_t lastSyncDacLatencyMs_ = 0;
 
   RateLimiter serverSettingsLogLimiter_;
-  // A chunk dropped in onAudioChunk() never calls sync_.onFramesWritten(),
-  // so sync_'s clock would fall behind real elapsed server-time - deferred
-  // here since onAudioChunk() runs on a different thread than sync_'s.
-  std::atomic<size_t> droppedChunkFrames_{0};
-
   std::vector<int16_t> scratchResampled_;
   std::optional<PendingChunk> pendingChunk_;
 };

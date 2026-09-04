@@ -42,7 +42,8 @@ PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
       waiter_(waiter),
       queue_(kQueueCapacity),
       pcmQueue_(kPcmQueueCapacity),
-      decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_, sampleRateHz_),
+      decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_,
+              sampleRateHz_, samplesPerChunkHint_, droppedChunkFrames_),
       client_(client),
       serverSettingsLogLimiter_(1'000'000) {}
 
@@ -80,7 +81,15 @@ void PlaybackPipeline::onCodecReady(Codec codec,
                                     const bell::audio::Format& fmt) {
   sampleRate_ = fmt.getSampleRate();
   sampleRateHz_.store(fmt.getSampleRateValue(), std::memory_order_relaxed);
-  audioSink_.configure(fmt.getSampleRateValue());
+  const uint32_t expectedSamplesPerChunk = client_.expectedSamplesPerChunk();
+  samplesPerChunkHint_.store(expectedSamplesPerChunk,
+                             std::memory_order_relaxed);
+  appliedChunkFrames_.store(expectedSamplesPerChunk,
+                            std::memory_order_relaxed);
+  audioSink_.configure(fmt.getSampleRateValue(), expectedSamplesPerChunk);
+  // Reserved once so prepareForOutput()'s resize() never allocates on the
+  // audio path; +8 covers frameAdjustment's per-chunk swing.
+  scratchResampled_.reserve((expectedSamplesPerChunk + 8) * 2);
   lastSyncBufferMs_ = bufferMs_;
   lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
   sync_.onSettingsChanged(bufferMs_, fmt.getSampleRateValue());
@@ -105,7 +114,9 @@ void PlaybackPipeline::applyQueueCapacity() {
   if (bufferMs_ <= 0 || sr == 0) {
     return;
   }
-  const double chunkDurationMs = kFramesPerChunk * 1000.0 / sr;
+  const uint32_t samplesPerChunk =
+      samplesPerChunkHint_.load(std::memory_order_relaxed);
+  const double chunkDurationMs = samplesPerChunk * 1000.0 / sr;
   const size_t entries =
       static_cast<size_t>(std::ceil(bufferMs_ / chunkDurationMs));
   const size_t capacity = std::max<size_t>(entries, 1);
@@ -131,8 +142,11 @@ void PlaybackPipeline::onAudioChunk(Codec codec, ChunkBuffer payload,
     return;
   }
 
+
   if (queue_.size() >= queue_.capacity()) {
-    droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
+    droppedChunkFrames_.fetch_add(
+        samplesPerChunkHint_.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
     return;
   }
 
@@ -146,7 +160,9 @@ void PlaybackPipeline::onAudioChunk(Codec codec, ChunkBuffer payload,
   // doesn't have.
   item.payload = std::move(payload);
   if (!queue_.tryPush(std::move(item))) {
-    droppedChunkFrames_.fetch_add(kFramesPerChunk, std::memory_order_relaxed);
+    droppedChunkFrames_.fetch_add(
+        samplesPerChunkHint_.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
   }
 }
 
@@ -216,6 +232,17 @@ void PlaybackPipeline::lockOntoChunk(DecodedChunk firstItem, int64_t waitUs) {
 }
 
 void PlaybackPipeline::consumeOnce() {
+  // Re-size both once DecoderTask reports a chunk size onCodecReady() did
+  // not have. Guarded because applyQueueCapacity() is not a no-op.
+  const uint32_t samplesPerChunk =
+      samplesPerChunkHint_.load(std::memory_order_relaxed);
+  if (samplesPerChunk != appliedChunkFrames_.load(std::memory_order_relaxed)) {
+    audioSink_.configure(sampleRateHz_.load(std::memory_order_relaxed),
+                         samplesPerChunk);
+    applyQueueCapacity();
+    appliedChunkFrames_.store(samplesPerChunk, std::memory_order_relaxed);
+  }
+
   // Applied here, not in onAudioChunk() - see droppedChunkFrames_'s comment.
   // Only consumed (reset) while playing - onAudioChunk() keeps running on
   // its own thread during a resync search, so drops from that window must

@@ -1,9 +1,11 @@
 #include "snapclient/DecoderTask.h"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <vector>
 
+#include <bell/Logger.h>
 #include <tcb/span.hpp>
 
 #include "snapclient/SnapcastClient.h"
@@ -19,14 +21,16 @@ int64_t nowUs() {
       .count();
 }
 
-const std::vector<int16_t> kSilenceChunk(kFramesPerChunk * 2, 0);
+const std::vector<int16_t> kSilenceChunk(kOpusSamplesPerChunk * 2, 0);
 }  // namespace
 
 DecoderTask::DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
                          BoundedQueue<DecodedChunk>& pcmQueue,
                          std::atomic<uint32_t>& codecGeneration,
                          SnapcastClient& client, DspProcessor& dsp,
-                         std::atomic<uint32_t>& sampleRateHz)
+                         std::atomic<uint32_t>& sampleRateHz,
+                         std::atomic<uint32_t>& samplesPerChunkHint,
+                         std::atomic<size_t>& droppedChunkFrames)
     // Above SnapcastClient's priority (4) - pcmQueue_'s 2-slot margin is
     // far thinner than queue_'s (tens of chunks), so decode losing the CPU
     // race matters more than network receive doing so. CoreAny, not pinned
@@ -41,14 +45,16 @@ DecoderTask::DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
       codecGeneration_(codecGeneration),
       client_(client),
       dsp_(dsp),
-      sampleRateHz_(sampleRateHz) {
+      sampleRateHz_(sampleRateHz),
+      samplesPerChunkHint_(samplesPerChunkHint),
+      droppedChunkFrames_(droppedChunkFrames) {
   startTask();
 }
 
 void DecoderTask::runTask() {
   // Heap, not stack - this task's stack is an unmeasured, conservative
   // guess, and a buffer this size is enough to overflow a tight one.
-  std::vector<std::byte> decodeBuf(kPcmChunkBytes);
+  std::vector<std::byte> decodeBuf;
   int64_t lastAllocDropYieldUs = 0;
 
   while (true) {
@@ -59,6 +65,15 @@ void DecoderTask::runTask() {
 
     if (item.codecGen != codecGeneration_.load(std::memory_order_relaxed)) {
       continue;
+    }
+
+    // Not samplesPerChunkHint_: that tracks the last chunk decoded, and a
+    // short Flac block may be followed by a full-size one.
+    const size_t decodeBufBytes = std::min<size_t>(
+        size_t{client_.expectedSamplesPerChunk()} * kBytesPerFrame,
+        kMaxDecodedChunkBytes);
+    if (decodeBufBytes > 0 && decodeBuf.size() != decodeBufBytes) {
+      decodeBuf.resize(decodeBufBytes);
     }
 
     ChunkBuffer pcm;
@@ -79,12 +94,36 @@ void DecoderTask::runTask() {
             kSilenceChunk.size() * sizeof(int16_t));
       } else {
         pcm = acquireChunkBuffer(decodeBuf.data(), *decoded);
+        samplesPerChunkHint_.store(
+            static_cast<uint32_t>(*decoded / kBytesPerFrame),
+            std::memory_order_relaxed);
+      }
+    } else if (item.codec == Codec::Flac) {
+      auto decoded = client_.decodeFlac(
+          tcb::span<const std::byte>(item.payload.data(),
+                                     item.payload.size()),
+          decodeBuf.data(), decodeBuf.size());
+      if (!decoded) {
+        pcm = acquireChunkBuffer(
+            reinterpret_cast<const std::byte*>(kSilenceChunk.data()),
+            kSilenceChunk.size() * sizeof(int16_t));
+      } else {
+        pcm = acquireChunkBuffer(decodeBuf.data(), *decoded);
+        samplesPerChunkHint_.store(
+            static_cast<uint32_t>(*decoded / kBytesPerFrame),
+            std::memory_order_relaxed);
       }
     } else {
       pcm = std::move(item.payload);
+      samplesPerChunkHint_.store(
+          static_cast<uint32_t>(pcm.size() / kBytesPerFrame),
+          std::memory_order_relaxed);
     }
 
     if (!pcm) {
+      droppedChunkFrames_.fetch_add(
+          samplesPerChunkHint_.load(std::memory_order_relaxed),
+          std::memory_order_relaxed);
       const int64_t now = nowUs();
       if (now - lastAllocDropYieldUs >= kAllocDropYieldMs * 1000) {
         lastAllocDropYieldUs = now;

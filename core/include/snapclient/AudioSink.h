@@ -11,7 +11,10 @@ namespace snapclient {
 class AudioSink {
  public:
   virtual ~AudioSink() = default;
-  virtual void configure(uint32_t sampleRate) = 0;
+  // chunkFrames is the codec's real samples-per-chunk. A sink pacing output
+  // through fixed-size hardware buffers must size those to divide it evenly;
+  // a partial remainder mis-tracks real elapsed time.
+  virtual void configure(uint32_t sampleRate, uint32_t chunkFrames) = 0;
   virtual void write(const std::byte* pcm, size_t len) = 0;
   virtual void setMuted(bool muted) = 0;
 

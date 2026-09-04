@@ -64,11 +64,20 @@ struct ServerSettingsMessage {
 
 enum class Codec { None, Pcm, Opus, Flac };
 
+// Snapcast always encodes Opus as 20ms frames at 48kHz. Pcm/Flac have no
+// equivalent constant - their chunk size is only known once one arrives.
+constexpr uint32_t kOpusSamplesPerChunk = 960;
+
 struct CodecHeaderMessage {
   Codec codec = Codec::None;
   uint32_t sampleRate = 0;
   uint16_t bits = 0;
   uint16_t channels = 0;
+  // Raw FLAC codec-payload bytes (magic + metadata blocks) - unlike
+  // Opus/Pcm, FLAC's real format lives in STREAMINFO inside these, which
+  // FlacCodec::setupDecodeFromHeaders() parses itself. Empty for other
+  // codecs.
+  std::vector<std::byte> flacPayload;
 
   static std::optional<CodecHeaderMessage> parse(const std::byte* payload,
                                                   size_t len);
