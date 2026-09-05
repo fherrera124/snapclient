@@ -1,8 +1,12 @@
 #include <bell/Logger.h>
+#include <bell/mdns/Manager.h>
 #include <bell/utils/Task.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <ctime>
 #include <memory>
+#include <string>
 #include <thread>
 
 #include "esp_event.h"
@@ -128,6 +132,23 @@ class SnapclientTask : public bell::Task {
     if (!settings.hostname().empty()) {
       config.clientName = settings.hostname();
     }
+    // Advertising a port nothing is bound to is worse than not advertising.
+    // advertise() also sets the device-wide mDNS hostname, so the board
+    // answers to <clientName>.local. A later hostname change needs a reboot.
+    std::unique_ptr<bell::mdns::Advertiser> httpAdvertiser;
+    if (controlListenRes) {
+      auto advertiseRes = bell::mdns::getDefaultManager()->advertise(
+          config.clientName, "_http._tcp", "", "", CONFIG_SNAPCLIENT_WEB_PORT);
+      if (advertiseRes) {
+        httpAdvertiser = std::move(*advertiseRes);
+        BELL_LOG(info, kLogTag, "advertising http at {}.local:{}",
+                 config.clientName, CONFIG_SNAPCLIENT_WEB_PORT);
+      } else {
+        BELL_LOG(warn, kLogTag, "mdns advertise failed: {}",
+                 advertiseRes.error().message());
+      }
+    }
+
     if (!networkHasIp()) {
       BELL_LOG(info, kLogTag,
                "waiting for a network before connecting to {}:{}", config.host,
@@ -236,7 +257,11 @@ extern "C" void app_main(void) {
   // bell's logger timestamps every line with wall-clock time - without
   // this they're meaningless until the RTC happens to be right. Syncs
   // in the background once WiFi is up; doesn't block startup on it.
-  esp_sntp_config_t sntpConfig = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+  setenv("TZ", CONFIG_SNAPCLIENT_SNTP_TIMEZONE, 1);
+  tzset();
+
+  esp_sntp_config_t sntpConfig =
+      ESP_NETIF_SNTP_DEFAULT_CONFIG(CONFIG_SNAPCLIENT_SNTP_SERVER);
   if (esp_err_t sntpErr = esp_netif_sntp_init(&sntpConfig); sntpErr != ESP_OK) {
     ESP_LOGW(TAG, "esp_netif_sntp_init failed: %d", sntpErr);
   }

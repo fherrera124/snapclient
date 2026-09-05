@@ -53,4 +53,16 @@ menu "Snapclient Configuration"
         hex "DAC I2C address"
         default 0x2D
 
+    config SNAPCLIENT_SNTP_SERVER
+        string "SNTP server"
+        default "pool.ntp.org"
+
+    config SNAPCLIENT_SNTP_TIMEZONE
+        string "Log timestamp timezone (POSIX TZ)"
+        default "UTC"
+        help
+            POSIX TZ string, e.g. "ART3" or "CET-1CEST,M3.5.0,M10.5.0/3".
+            Only affects how log timestamps read; nothing in playback or
+            sync uses local time.
+
 endmenu
