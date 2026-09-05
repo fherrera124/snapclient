@@ -53,6 +53,14 @@ menu "Snapclient Configuration"
         hex "DAC I2C address"
         default 0x2D
 
+    # espressif/ethernet_init turns the internal EMAC on by default wherever
+    # the SoC has one. Nothing is wired to it here, so start from off; the
+    # component's own "Ethernet Configuration" menu still turns it on.
+    config SNAPCLIENT_ETH_OFF_BY_DEFAULT
+        bool
+        default y
+        select ETHERNET_INIT_DEFAULT_ETH_DISABLED
+
     config SNAPCLIENT_WIFI_SSID
         string "WiFi SSID (empty to provision over Improv instead)"
         default ""
