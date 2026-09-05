@@ -53,6 +53,24 @@ menu "Snapclient Configuration"
         hex "DAC I2C address"
         default 0x2D
 
+    config SNAPCLIENT_WIFI_SSID
+        string "WiFi SSID (empty to provision over Improv instead)"
+        default ""
+        help
+            Applied on every boot, so it overrides whatever Improv stored.
+            Leave empty to keep credentials in NVS.
+
+    config SNAPCLIENT_WIFI_PASSWORD
+        string "WiFi password"
+        default ""
+
+    config SNAPCLIENT_IMPROV_TIMEOUT_S
+        int "Seconds before Improv stops listening (0 = never)"
+        default 0
+        help
+            Frees the provisioning task's 8K stack once the window closes.
+            An in-progress provisioning attempt is never cut off.
+
     config SNAPCLIENT_SNTP_SERVER
         string "SNTP server"
         default "pool.ntp.org"

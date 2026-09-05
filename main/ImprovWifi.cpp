@@ -7,6 +7,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,6 +39,10 @@ ImprovWifi::ImprovWifi()
 #endif
   esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &onWifiEvent, this);
   esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &onWifiEvent, this);
+  if (CONFIG_SNAPCLIENT_IMPROV_TIMEOUT_S > 0) {
+    deadlineUs_ = esp_timer_get_time() +
+                  int64_t{CONFIG_SNAPCLIENT_IMPROV_TIMEOUT_S} * 1000000;
+  }
   startTask();
 }
 
@@ -67,6 +72,16 @@ void ImprovWifi::onWifiEvent(void* arg, esp_event_base_t base, int32_t id,
 }
 
 void ImprovWifi::taskLoop() {
+  if (deadlineUs_ > 0 && esp_timer_get_time() > deadlineUs_ &&
+      !provisioningInProgress_) {
+    ESP_LOGI(kLogTag, "provisioning window closed after %d s",
+             CONFIG_SNAPCLIENT_IMPROV_TIMEOUT_S);
+    // Returns from runTask()'s loop, so FreeRTOS reclaims the stack. The
+    // console driver stays installed - main.cpp never destroys this.
+    taskRunning = false;
+    return;
+  }
+
   uint8_t buf[64];
   int len = 0;
 #if CONFIG_ESP_CONSOLE_UART_DEFAULT || CONFIG_ESP_CONSOLE_UART_CUSTOM

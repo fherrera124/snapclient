@@ -16,8 +16,9 @@ namespace snapclient {
 
 // Improv Serial (improv-wifi.com) WiFi provisioning over whichever
 // interface ESP-IDF's console Kconfig selects (UART or USB-Serial-JTAG).
-// Always listens, whether or not credentials are already stored -
-// reprovisioning doesn't need a factory reset.
+// Listens whether or not credentials are already stored - reprovisioning
+// doesn't need a factory reset - until CONFIG_SNAPCLIENT_IMPROV_TIMEOUT_S
+// elapses, if that is set.
 class ImprovWifi : public bell::Task {
  public:
   ImprovWifi();
@@ -67,6 +68,10 @@ class ImprovWifi : public bell::Task {
 
   size_t framePos_ = 0;
   std::array<uint8_t, 9 + kMaxPayloadLen> frame_{};
+
+  // esp_timer_get_time() value past which taskLoop() stops the task. 0
+  // means never.
+  int64_t deadlineUs_ = 0;
 
   void handleByte(uint8_t b);
   void onFrameComplete(const uint8_t* payload, uint8_t len);

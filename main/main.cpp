@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <memory>
 #include <string>
@@ -132,6 +133,7 @@ class SnapclientTask : public bell::Task {
     if (!settings.hostname().empty()) {
       config.clientName = settings.hostname();
     }
+
     // Advertising a port nothing is bound to is worse than not advertising.
     // advertise() also sets the device-wide mDNS hostname, so the board
     // answers to <clientName>.local. A later hostname change needs a reboot.
@@ -237,6 +239,24 @@ void wifiStationInit() {
       IP_EVENT, IP_EVENT_STA_LOST_IP, &onWifiEvent, nullptr));
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+  if (sizeof(CONFIG_SNAPCLIENT_WIFI_SSID) > 1) {
+    wifi_config_t staConfig{};
+    static_assert(sizeof(CONFIG_SNAPCLIENT_WIFI_SSID) - 1 <=
+                      sizeof(staConfig.sta.ssid),
+                  "CONFIG_SNAPCLIENT_WIFI_SSID too long");
+    static_assert(sizeof(CONFIG_SNAPCLIENT_WIFI_PASSWORD) - 1 <=
+                      sizeof(staConfig.sta.password),
+                  "CONFIG_SNAPCLIENT_WIFI_PASSWORD too long");
+    std::memcpy(staConfig.sta.ssid, CONFIG_SNAPCLIENT_WIFI_SSID,
+                sizeof(CONFIG_SNAPCLIENT_WIFI_SSID) - 1);
+    std::memcpy(staConfig.sta.password, CONFIG_SNAPCLIENT_WIFI_PASSWORD,
+                sizeof(CONFIG_SNAPCLIENT_WIFI_PASSWORD) - 1);
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &staConfig));
+    ESP_LOGI(TAG, "using compiled-in credentials for \"%s\"",
+             CONFIG_SNAPCLIENT_WIFI_SSID);
+  }
+
   ESP_ERROR_CHECK(esp_wifi_start());
   esp_wifi_set_ps(WIFI_PS_NONE);
 }

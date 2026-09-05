@@ -7,7 +7,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_driver_gpio esp_driver_gptimer esp_driver_i2s
                   esp_driver_uart esp_driver_usb_serial_jtag esp_event
-                  esp_netif esp_pm esp_wifi nvs_flash
+                  esp_netif esp_pm esp_timer esp_wifi nvs_flash
 )
 
 # taojson's operator"" _foo() syntax (space before the suffix) is
