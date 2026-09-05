@@ -143,14 +143,18 @@ keeps whatever it already recorded.
 These pinouts came from the `sdkconfig_*` dumps this port inherited, which
 have been removed: they were full configs for a different application on
 ESP-IDF 5, so most of what they contained no longer resolves, and copying
-one over `sdkconfig` silently dropped the settings that mattered. Only the
-five esp32 fragments are build-verified.
+one over `sdkconfig` silently dropped the settings that mattered. All six
+fragments are build-verified.
 
-The ESP32-S2 one is pins only — that target does not build. bell assembles
-`main/platform/esp/*.S` for every ESP target and `biquad_f32_ae32.S` needs
-the single-precision FPU the S2 does not have (it is dead code, nothing
-calls it), and `SnapclientTask` pins to Core1, which a single-core chip
-does not have. Both are small fixes nobody has needed yet.
+The ESP32-S2 build works but has never been run. That part is single-core,
+so playback pacing and lwIP share one core rather than having one each,
+which is the arrangement `SnapclientTask`'s priority was chosen for — see
+the comment on it in `main/main.cpp`. Whether one core keeps up with Opus
+or FLAC decoding plus sync is untested. The parts that made it fail to
+compile at all are fixed: the IRAM chunk tier is now behind
+`CONFIG_HEAP_HAS_EXEC_HEAP`, since instruction and data RAM are one region
+there, and the task falls back to no core affinity under
+`CONFIG_FREERTOS_UNICORE`.
 
 ## Host build and tests
 

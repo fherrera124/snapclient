@@ -63,11 +63,15 @@ std::byte* allocatePoolSlot(size_t len, bool& wordOnly) {
       return p;
     }
   }
+#if CONFIG_HEAP_HAS_EXEC_HEAP
+  // Absent where instruction and data RAM are one region (ESP32-S2, the
+  // RISC-V parts), so there is no leftover instruction RAM to take.
   if (auto* p = static_cast<std::byte*>(
           heap_caps_malloc(len, MALLOC_CAP_32BIT | MALLOC_CAP_EXEC))) {
     wordOnly = true;
     return p;
   }
+#endif
   return allocateChunkMemory(len);
 }
 #else

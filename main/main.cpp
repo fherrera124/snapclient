@@ -75,8 +75,19 @@ class SnapclientTask : public bell::Task {
   // (18), so a pending WaitMore/DMA wakeup preempts lwIP instead of queuing
   // behind it. Still blocks efficiently (queue/timer/DMA waits), so idle
   // isn't starved.
+  //
+  // Core1 keeps that preemption off lwIP's core. A single-core part has no
+  // core 1 to ask for - xTaskCreatePinnedToCore asserts on the id - and the
+  // separation the priority relies on does not exist there either.
+  static constexpr bell::TaskCore kCore =
+#if CONFIG_FREERTOS_UNICORE
+      bell::TaskCore::CoreAny;
+#else
+      bell::TaskCore::Core1;
+#endif
+
   SnapclientTask()
-      : bell::Task("snapclient", 8 * 1024, 15, bell::TaskCore::Core1,
+      : bell::Task("snapclient", 8 * 1024, 15, kCore,
                    /*espStackOnPsram=*/false) {
     startTask();
   }
