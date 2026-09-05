@@ -1,22 +1,14 @@
-# Migrated from master's sdkconfig_adau1961, which identifies its board
-# only as "custom" - the pins are recorded here, the board is not known.
-#
-#   rm sdkconfig
-#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/adau1961-custom.defaults" build
-
+# Custom board from master's sdkconfig_adau1961, which does not name it.
 CONFIG_SNAPCLIENT_I2S_MCLK_GPIO=3
 CONFIG_SNAPCLIENT_I2S_BCLK_GPIO=15
 CONFIG_SNAPCLIENT_I2S_WS_GPIO=13
 CONFIG_SNAPCLIENT_I2S_DOUT_GPIO=4
-
 CONFIG_ETHERNET_INTERNAL_SUPPORT=y
 CONFIG_ETHERNET_PHY_LAN87XX=y
 CONFIG_ETHERNET_MDC_GPIO=23
 CONFIG_ETHERNET_MDIO_GPIO=18
 CONFIG_ETHERNET_PHY_RST_GPIO=17
 CONFIG_ETHERNET_PHY_ADDR=0
-# The RMII clock options only exist under this; without it they are
-# silently dropped and the driver's hardcoded default is used instead.
 CONFIG_ETHERNET_PHY_INTERFACE_RMII=y
 CONFIG_ETHERNET_RMII_CLK_INPUT=y
 CONFIG_ETHERNET_RMII_CLK_GPIO=0

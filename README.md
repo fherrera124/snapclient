@@ -131,6 +131,11 @@ idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/tas5805m.defaults" build
 Defaults only seed a fresh config, hence the `rm` — an existing `sdkconfig`
 keeps whatever it already recorded.
 
+One trap when editing these: `CONFIG_ETHERNET_RMII_CLK_OUTPUT` and
+`_CLK_GPIO` only exist under `CONFIG_ETHERNET_PHY_INTERFACE_RMII`, whose
+default is the driver's own hardcoded configuration. Set the clock without
+that line and both are dropped in silence.
+
 | File | MCLK | BCLK | WS | DOUT | Extra |
 |---|---|---|---|---|---|
 | `pcm5102a` | 0 | 26 | 25 | 22 | — |
