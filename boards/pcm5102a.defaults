@@ -1,0 +1,10 @@
+# Plain ESP32 with a PCM5102A on I2S, no Ethernet.
+# Migrated from master's sdkconfig_PCM5102A.
+#
+#   rm sdkconfig
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/pcm5102a.defaults" build
+
+CONFIG_SNAPCLIENT_I2S_MCLK_GPIO=0
+CONFIG_SNAPCLIENT_I2S_BCLK_GPIO=26
+CONFIG_SNAPCLIENT_I2S_WS_GPIO=25
+CONFIG_SNAPCLIENT_I2S_DOUT_GPIO=22

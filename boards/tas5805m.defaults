@@ -1,0 +1,16 @@
+# Plain ESP32 with a TAS5805M amplifier: I2S for audio, I2C for its
+# registers. Migrated from master's sdkconfig_TAS5805M.
+#
+#   rm sdkconfig
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/tas5805m.defaults" build
+
+CONFIG_SNAPCLIENT_I2S_MCLK_GPIO=0
+CONFIG_SNAPCLIENT_I2S_BCLK_GPIO=26
+CONFIG_SNAPCLIENT_I2S_WS_GPIO=25
+CONFIG_SNAPCLIENT_I2S_DOUT_GPIO=22
+
+# Setting these is what makes the DAC/EQ control available at all - they
+# are -1 by default.
+CONFIG_SNAPCLIENT_DAC_I2C_SDA_GPIO=21
+CONFIG_SNAPCLIENT_DAC_I2C_SCL_GPIO=27
+CONFIG_SNAPCLIENT_DAC_I2C_ADDR=0x2D

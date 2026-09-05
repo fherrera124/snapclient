@@ -107,22 +107,7 @@ Ethernet and WiFi both stay up. Whichever has an address is used, and the
 wired link takes the default route while it is connected (`route_prio` 150
 against WIFI_STA's 100).
 
-`boards/` has the pinouts for the two Ethernet boards this port inherited
-settings for:
-
-```
-rm sdkconfig
-idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/olimex-esp32-poe.defaults" build
-```
-
-| Board | PHY | MDC | MDIO | Reset | Addr | RMII clock |
-|---|---|---|---|---|---|---|
-| Olimex ESP32-PoE | LAN87xx | 23 | 18 | 12 | 0 | output, GPIO17 |
-| WT32-ETH01 | LAN87xx | 23 | 18 | 16 | 1 | input, GPIO0 |
-| custom (adau1961) | LAN87xx | 23 | 18 | 17 | 0 | input, GPIO0 |
-
-The third has no board file because the config it came from identifies
-itself only as a custom board.
+All three Ethernet pinouts this port inherited are in `boards/` — see below.
 
 **The Olimex ESP32-PoE clocks its PHY from the ESP32**, and ESP-IDF warns
 that RMII CLK output is unstable on the ESP32 when Ethernet and WiFi run
@@ -131,6 +116,36 @@ thing to suspect.
 
 None of the Ethernet paths have run on hardware — there was no Ethernet
 board to test with. They are compile-verified only.
+
+## Boards
+
+`boards/` holds one defaults fragment per board, carrying its I2S pins and,
+where it applies, the DAC's I2C pins and the Ethernet PHY wiring. Layer one
+on top of `sdkconfig.defaults`:
+
+```
+rm sdkconfig
+idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/tas5805m.defaults" build
+```
+
+Defaults only seed a fresh config, hence the `rm` — an existing `sdkconfig`
+keeps whatever it already recorded.
+
+| File | MCLK | BCLK | WS | DOUT | Extra |
+|---|---|---|---|---|---|
+| `pcm5102a` | 0 | 26 | 25 | 22 | — |
+| `tas5805m` | 0 | 26 | 25 | 22 | I2C 21/27, addr 0x2D |
+| `olimex-esp32-poe` | 0 | 13 | 14 | 32 | LAN87xx, RMII clock out |
+| `wt32-eth01` | -1 | 15 | 4 | 14 | LAN87xx, RMII clock in |
+| `adau1961-custom` | 3 | 15 | 13 | 4 | LAN87xx, RMII clock in |
+| `max98357a-esp32s2` | -1 | 10 | 11 | 12 | esp32s2 target |
+
+These pinouts came from the `sdkconfig_*` dumps this port inherited, which
+have been removed: they were full configs for a different application on
+ESP-IDF 5, so most of what they contained no longer resolves, and copying
+one over `sdkconfig` silently dropped the settings that mattered. Only the
+five esp32 fragments are build-verified; the ESP32-S2 one carries pins for
+a target this port has never been built for.
 
 ## Host build and tests
 
