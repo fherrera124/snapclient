@@ -94,6 +94,44 @@ idf.py -p /dev/ttyUSB0 flash monitor
 The partition table is a single 2MB factory app — over-the-air update is not
 implemented yet; see `docs/ota-plan.md`.
 
+## Ethernet
+
+Off by default. Turn it on under **Ethernet Configuration** — `Internal EMAC`
+for a board with a PHY on the RMII pins, `SPI Ethernet` for a W5500 and
+friends. Both come from [espressif/ethernet_init][ethernet-init], which
+carries the chip, PHY and GPIO options.
+
+[ethernet-init]: https://components.espressif.com/components/espressif/ethernet_init
+
+Ethernet and WiFi both stay up. Whichever has an address is used, and the
+wired link takes the default route while it is connected (`route_prio` 150
+against WIFI_STA's 100).
+
+`boards/` has the pinouts for the two Ethernet boards this port inherited
+settings for:
+
+```
+rm sdkconfig
+idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/olimex-esp32-poe.defaults" build
+```
+
+| Board | PHY | MDC | MDIO | Reset | Addr | RMII clock |
+|---|---|---|---|---|---|---|
+| Olimex ESP32-PoE | LAN87xx | 23 | 18 | 12 | 0 | output, GPIO17 |
+| WT32-ETH01 | LAN87xx | 23 | 18 | 16 | 1 | input, GPIO0 |
+| custom (adau1961) | LAN87xx | 23 | 18 | 17 | 0 | input, GPIO0 |
+
+The third has no board file because the config it came from identifies
+itself only as a custom board.
+
+**The Olimex ESP32-PoE clocks its PHY from the ESP32**, and ESP-IDF warns
+that RMII CLK output is unstable on the ESP32 when Ethernet and WiFi run
+together. If that board misbehaves with both up, that erratum is the first
+thing to suspect.
+
+None of the Ethernet paths have run on hardware — there was no Ethernet
+board to test with. They are compile-verified only.
+
 ## Host build and tests
 
 `core/` builds on its own, so the protocol, sync and pool logic can be

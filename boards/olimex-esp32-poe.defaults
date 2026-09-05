@@ -1,0 +1,20 @@
+# Olimex ESP32-PoE / ESP32-PoE-ISO: LAN8710A on the internal EMAC.
+# Pinout migrated from master's sdkconfig_PCM5102A_Olimex-ESP32-PoE.
+#
+#   rm sdkconfig
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/olimex-esp32-poe.defaults" build
+#
+# This board clocks the PHY from the ESP32 rather than the other way round.
+# ESP-IDF warns that RMII CLK output on the ESP32 is unstable when Ethernet
+# and WiFi run at the same time - see the README before relying on both.
+CONFIG_ETHERNET_INTERNAL_SUPPORT=y
+CONFIG_ETHERNET_PHY_LAN87XX=y
+CONFIG_ETHERNET_MDC_GPIO=23
+CONFIG_ETHERNET_MDIO_GPIO=18
+CONFIG_ETHERNET_PHY_RST_GPIO=12
+CONFIG_ETHERNET_PHY_ADDR=0
+# The RMII clock options only exist under this; without it they are
+# silently dropped and the driver's hardcoded default is used instead.
+CONFIG_ETHERNET_PHY_INTERFACE_RMII=y
+CONFIG_ETHERNET_RMII_CLK_OUTPUT=y
+CONFIG_ETHERNET_RMII_CLK_GPIO=17

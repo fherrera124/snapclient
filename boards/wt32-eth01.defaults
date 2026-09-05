@@ -1,0 +1,16 @@
+# WT32-ETH01: LAN8720A on the internal EMAC, clocked from the board.
+# Pinout migrated from master's sdkconfig_PCM5102A_WT32-ETH01.
+#
+#   rm sdkconfig
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/wt32-eth01.defaults" build
+CONFIG_ETHERNET_INTERNAL_SUPPORT=y
+CONFIG_ETHERNET_PHY_LAN87XX=y
+CONFIG_ETHERNET_MDC_GPIO=23
+CONFIG_ETHERNET_MDIO_GPIO=18
+CONFIG_ETHERNET_PHY_RST_GPIO=16
+CONFIG_ETHERNET_PHY_ADDR=1
+# The RMII clock options only exist under this; without it they are
+# silently dropped and the driver's hardcoded default is used instead.
+CONFIG_ETHERNET_PHY_INTERFACE_RMII=y
+CONFIG_ETHERNET_RMII_CLK_INPUT=y
+CONFIG_ETHERNET_RMII_CLK_GPIO=0
