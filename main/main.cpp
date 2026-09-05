@@ -1,7 +1,6 @@
 #include <bell/Logger.h>
 #include <bell/utils/Task.h>
 
-#include <atomic>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -31,7 +30,20 @@ namespace {
 
 const char* TAG = "snapclient";
 
-std::atomic<bool> wifiConnected{false};
+bool netifHasIp(esp_netif_t* netif, void* /*ctx*/) {
+  if (!esp_netif_is_netif_up(netif)) {
+    return false;
+  }
+  esp_netif_ip_info_t ipInfo{};
+  return esp_netif_get_ip_info(netif, &ipInfo) == ESP_OK &&
+         ipInfo.ip.addr != 0;
+}
+
+// Any interface with an address will do, so adding Ethernet needs no
+// change here.
+bool networkHasIp() {
+  return esp_netif_find_if(netifHasIp, nullptr) != nullptr;
+}
 
 snapclient::AudioSinkI2S::Config buildSinkConfig() {
   snapclient::AudioSinkI2S::Config sinkConfig;
@@ -116,10 +128,11 @@ class SnapclientTask : public bell::Task {
     if (!settings.hostname().empty()) {
       config.clientName = settings.hostname();
     }
-    if (!wifiConnected) {
-      BELL_LOG(info, kLogTag, "waiting for WiFi before connecting to {}:{}",
-               config.host, config.port);
-      while (!wifiConnected) {
+    if (!networkHasIp()) {
+      BELL_LOG(info, kLogTag,
+               "waiting for a network before connecting to {}:{}", config.host,
+               config.port);
+      while (!networkHasIp()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
       }
     }
@@ -171,7 +184,6 @@ void onWifiEvent(void* /*arg*/, esp_event_base_t eventBase, int32_t eventId,
     esp_wifi_connect();
   } else if (eventBase == WIFI_EVENT &&
             eventId == WIFI_EVENT_STA_DISCONNECTED) {
-    wifiConnected = false;
     // ImprovWifi::connectWifi() drives reconnection itself while
     // provisioning - step aside instead of racing it.
     if (snapclient::ImprovWifi::isProvisioning()) {
@@ -180,13 +192,10 @@ void onWifiEvent(void* /*arg*/, esp_event_base_t eventBase, int32_t eventId,
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_wifi_connect();
   } else if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_GOT_IP) {
-    wifiConnected = true;
     ESP_LOGI(TAG, "WiFi got IP");
   } else if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_LOST_IP) {
     // Can fire without a WIFI_EVENT_STA_DISCONNECTED (e.g. DHCP lease lost
-    // while still associated) - esp_wifi_connect() isn't appropriate here,
-    // just stop treating the link as usable until GOT_IP fires again.
-    wifiConnected = false;
+    // while still associated), so esp_wifi_connect() isn't appropriate.
     ESP_LOGW(TAG, "WiFi lost IP");
   }
 }
