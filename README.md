@@ -144,8 +144,13 @@ These pinouts came from the `sdkconfig_*` dumps this port inherited, which
 have been removed: they were full configs for a different application on
 ESP-IDF 5, so most of what they contained no longer resolves, and copying
 one over `sdkconfig` silently dropped the settings that mattered. Only the
-five esp32 fragments are build-verified; the ESP32-S2 one carries pins for
-a target this port has never been built for.
+five esp32 fragments are build-verified.
+
+The ESP32-S2 one is pins only — that target does not build. bell assembles
+`main/platform/esp/*.S` for every ESP target and `biquad_f32_ae32.S` needs
+the single-precision FPU the S2 does not have (it is dead code, nothing
+calls it), and `SnapclientTask` pins to Core1, which a single-core chip
+does not have. Both are small fixes nobody has needed yet.
 
 ## Host build and tests
 

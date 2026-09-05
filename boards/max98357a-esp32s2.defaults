@@ -1,9 +1,17 @@
 # ESP32-S2 with a MAX98357A on I2S.
 # Migrated from master's sdkconfig_MAX98357A_ESP32-S2.
 #
-# This port has only ever been built for esp32. The S2 is single-core and
-# SnapclientTask pins itself to Core1, so treat this as the pinout alone
-# until someone actually builds it:
+# These are pins only - the port does not build for esp32s2 today. Two
+# things are in the way, both known:
+#
+#   - bell assembles main/platform/esp/*.S for every ESP target, and
+#     biquad_f32_ae32.S needs the single-precision FPU the S2 lacks. It is
+#     dead code - nothing calls dsps_biquad_f32_ae32 - so a target guard or
+#     deleting it costs nothing.
+#   - SnapclientTask pins to Core1; the S2 is single-core, and
+#     xTaskCreatePinnedToCore asserts on an out-of-range core id.
+#
+# Whatever comes after those two is unexplored.
 #
 #   rm sdkconfig
 #   idf.py set-target esp32s2
