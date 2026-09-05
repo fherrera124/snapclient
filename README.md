@@ -151,12 +151,11 @@ ESP-IDF 5, so most of what they contained no longer resolves, and copying
 one over `sdkconfig` silently dropped the settings that mattered. All six
 fragments are build-verified.
 
-The ESP32-S2 build works but has never been run. That part is single-core,
-so playback pacing and lwIP share one core rather than having one each,
-which is the arrangement `SnapclientTask`'s priority was chosen for — see
-the comment on it in `main/main.cpp`. Whether one core keeps up with Opus
-or FLAC decoding plus sync is untested. The parts that made it fail to
-compile at all are fixed: the IRAM chunk tier is now behind
+The ESP32-S2 build works but has never been run. Being single-core is
+probably not what would stop it: an ESP32 built single-core keeps up with
+both Opus and FLAC here, see above. Its 320 KB of SRAM against the ESP32's
+520 KB is the more likely obstacle, given that memory is what runs out
+first. The parts that made it fail to compile at all are fixed: the IRAM chunk tier is now behind
 `CONFIG_HEAP_HAS_EXEC_HEAP`, since instruction and data RAM are one region
 there, and the task falls back to no core affinity under
 `CONFIG_FREERTOS_UNICORE`.
@@ -208,6 +207,26 @@ comfortable; larger values can run the heap out on demanding material.
 
 The client says so when it happens rather than dropping audio quietly — see
 below.
+
+### One core, when memory is the constraint
+
+On a dual-core ESP32 the second core costs heap: it reserves DRAM, splits
+the D/IRAM pool in two around its own state, and puts RTC fast memory out
+of reach. Building single-core — `CONFIG_FREERTOS_UNICORE=y`, under
+*Component config → FreeRTOS → Kernel* — hands that back: 359 KiB of heap
+at boot against 311 KiB, and the D/IRAM arrives as one contiguous block
+instead of two. Contiguity matters as much as the total, since a lost
+chunk is a failed allocation of a few KB, not an exhausted heap.
+
+Measured on a plain ESP32 playing FLAC 48k at a 400ms buffer, three
+minutes each: dual-core dropped 110 chunks to failed allocations with
+7-14 KiB free, single-core dropped none. Neither run reported the decoder
+falling behind, so one core at 240 MHz was never the limit here — the
+constraint was memory, not processing.
+
+That is one board and one session, and it costs you the second core for
+everything else. But if a build is reporting `no memory for a N byte
+chunk`, it is worth trying alongside lowering the buffer.
 
 ## Settings and the web interface
 
