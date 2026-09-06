@@ -1,4 +1,18 @@
 # Guition JC3248W535 (ESP32-S3, 16MB flash) with an external PCM5102A.
+#
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/jc3248w535-pcm5102a.defaults" set-target esp32s3
+#   idf.py build
+#
+# The defaults belong on the set-target line, not on the build: set-target
+# is what creates the new sdkconfig, and defaults only ever seed a fresh
+# one. Passed to a later build they are ignored without a word.
+#
+# set-target also renames any existing sdkconfig to sdkconfig.old on its
+# own, so there is nothing to delete first - but that name is ESP-IDF's
+# own backup slot, and a second set-target overwrites it.
+#
+# Naming the target is what pulls in sdkconfig.defaults.esp32s3 alongside
+# sdkconfig.defaults, which is where PSRAM comes from.
 CONFIG_SNAPCLIENT_I2S_MCLK_GPIO=-1
 CONFIG_SNAPCLIENT_I2S_BCLK_GPIO=17
 CONFIG_SNAPCLIENT_I2S_WS_GPIO=18

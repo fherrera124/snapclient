@@ -124,12 +124,14 @@ where it applies, the DAC's I2C pins and the Ethernet PHY wiring. Layer one
 on top of `sdkconfig.defaults`:
 
 ```
-rm sdkconfig
-idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/tas5805m.defaults" build
+idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/tas5805m.defaults" set-target esp32
+idf.py build
 ```
 
-Defaults only seed a fresh config, hence the `rm` — an existing `sdkconfig`
-keeps whatever it already recorded.
+The defaults go on the `set-target` line, which is what writes the new
+`sdkconfig`; they only ever seed a fresh one, so passing them to a later
+`build` is ignored in silence. `set-target` renames any existing config to
+`sdkconfig.old` itself, so there is nothing to delete first.
 
 One trap when editing these: `CONFIG_ETHERNET_RMII_CLK_OUTPUT` and
 `_CLK_GPIO` only exist under `CONFIG_ETHERNET_PHY_INTERFACE_RMII`, whose
