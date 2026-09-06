@@ -208,7 +208,15 @@ comfortable; larger values can run the heap out on demanding material.
 The client says so when it happens rather than dropping audio quietly — see
 below.
 
+PSRAM lifts the ceiling rather than raising it: the chunk pool asks for
+`MALLOC_CAP_SPIRAM` before anything else, so on an ESP32-S3 with 8MB the
+same FLAC stream at a 700ms buffer — the setting that cost a 4MB WROOM-32
+332 chunks in twenty seconds — plays without the chip noticing.
+
 ### One core, when memory is the constraint
+
+Only worth reading if the board has no PSRAM. With it, the second core
+costs nothing that matters.
 
 On a dual-core ESP32 the second core costs heap: it reserves DRAM, splits
 the D/IRAM pool in two around its own state, and puts RTC fast memory out
