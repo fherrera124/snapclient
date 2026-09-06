@@ -119,7 +119,6 @@ class PlaybackPipeline {
   int32_t lastSyncBufferMs_ = 0;
   int32_t lastSyncDacLatencyMs_ = 0;
 
-  RateLimiter serverSettingsLogLimiter_;
   size_t queueFullDrops_ = 0;
   RateLimiter queueFullLogLimiter_;
   size_t starvedPolls_ = 0;

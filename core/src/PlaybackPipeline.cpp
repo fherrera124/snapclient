@@ -45,7 +45,6 @@ PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
       decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_,
               sampleRateHz_, samplesPerChunkHint_),
       client_(client),
-      serverSettingsLogLimiter_(1'000'000),
       queueFullLogLimiter_(kLossLogIntervalUs),
       starvationLogLimiter_(kLossLogIntervalUs) {}
 
@@ -67,16 +66,11 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
     lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
     sync_.onSettingsChanged(bufferMs_, static_cast<uint32_t>(sampleRate_));
     applyQueueCapacity();
+    BELL_LOG(info, logTag_, "server settings: bufferMs={} latencyMs={}",
+             s.bufferMs, s.latencyMs);
   }
   dsp_.setVolume(static_cast<float>(s.volume) / 100.0f);
   audioSink_.setMuted(s.muted);
-
-  // A UI volume slider sends one of these per tick while dragging - a
-  // blocking UART write per tick would stall the audio hot path.
-  if (serverSettingsLogLimiter_.due(nowUs())) {
-    BELL_LOG(info, logTag_, "server settings: bufferMs={} volume={} muted={}",
-             s.bufferMs, s.volume, s.muted);
-  }
 }
 
 void PlaybackPipeline::onCodecReady(Codec codec,
