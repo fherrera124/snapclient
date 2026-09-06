@@ -108,14 +108,8 @@ class PlaybackPipeline {
   // Snapcast's per-client "latency" setting, which nothing on this end
   // can measure directly.
   int32_t dacFixedLatencyMs_ = 0;
-  // Tracks what SyncEngine was last told, so a ServerSettings message
-  // that only changed volume/mute (bundled together in the same message
-  // by the protocol) doesn't also force a resync - sync_.onSettingsChanged
-  // drops playing_ back to the initial-sync state, which costs several
-  // seconds to recover from and has nothing to do with volume.
-  // dacFixedLatencyMs_ needs the same tracking - it's baked into the same
-  // age formula as bufferMs_, so changing it mid-stream is just as
-  // disruptive.
+  // Guard for the costly sync_.onSettingsChanged(): it restarts the
+  // initial sync.
   int32_t lastSyncBufferMs_ = 0;
   int32_t lastSyncDacLatencyMs_ = 0;
 
