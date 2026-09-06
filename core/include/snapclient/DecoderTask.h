@@ -12,6 +12,7 @@
 #include "snapclient/ChunkBuffer.h"
 #include "snapclient/DspProcessor.h"
 #include "snapclient/Protocol.h"
+#include "snapclient/RateLimiter.h"
 
 namespace snapclient {
 
@@ -74,6 +75,7 @@ class DecoderTask : public bell::Task {
   std::atomic<uint32_t>& sampleRateHz_;
   // Real samples-per-chunk of the last chunk decoded, written every chunk.
   std::atomic<uint32_t>& samplesPerChunkHint_;
+  RateLimiter dspFailureLogLimiter_{kLossLogIntervalUs};
 };
 
 }  // namespace snapclient

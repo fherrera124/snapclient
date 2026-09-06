@@ -3,6 +3,9 @@
 #include <bell/Logger.h>
 #include <tcb/span.hpp>
 
+#include <chrono>
+#include <new>
+
 #include "snapclient/SnapcastClient.h"
 
 namespace snapclient {
@@ -37,7 +40,20 @@ DecoderTask::DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
 // a pool slot may only tolerate aligned 32-bit access.
 ChunkBuffer DecoderTask::processAndStore(tcb::span<std::byte> pcm,
                                          bell::audio::SampleRate sampleRate) {
-  dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(), sampleRate);
+  try {
+    dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(), sampleRate);
+  } catch (const std::bad_alloc&) {
+    // process() is in place, so the chunk simply goes out unprocessed.
+    // Playing without the DSP beats losing the device to a slot the
+    // engine could not size.
+    const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+    if (dspFailureLogLimiter_.due(now)) {
+      BELL_LOG(error, "decoder",
+               "dsp out of memory - passing audio through unprocessed");
+    }
+  }
   return acquirePooledChunkBuffer(pcm.data(), pcm.size());
 }
 
