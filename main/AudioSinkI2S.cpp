@@ -102,8 +102,11 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
           },
   };
 
-  // Force the high-precision Audio PLL clock source
+#if SOC_I2S_SUPPORTS_APLL
+  // Force the high-precision Audio PLL clock source. Parts without one
+  // (ESP32-S3 and later) keep the default PLL and its fractional divider.
   stdConfig.clk_cfg.clk_src = I2S_CLK_SRC_APLL;
+#endif
 
   err = i2s_channel_init_std_mode(txChan_, &stdConfig);
   if (err != ESP_OK) {
