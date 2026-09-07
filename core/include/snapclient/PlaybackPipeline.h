@@ -66,6 +66,7 @@ class PlaybackPipeline {
   // network jitter as bufferMs_ grows. No-op until both bufferMs_ and
   // sampleRateHz_ are known.
   void applyQueueCapacity();
+  void flushSettingsLog();
 
   // queue_'s capacity before real settings arrive - see
   // applyQueueCapacity().
@@ -79,6 +80,8 @@ class PlaybackPipeline {
   // consumeOnce() is playing, the one DecoderTask is building, and one in
   // transit between them.
   static constexpr size_t kPcmBuffersInFlight = 4;
+  // A volume slider sends one settings message per tick while dragging.
+  static constexpr int64_t kSettingsLogSettleUs = 200'000;
 
   const char* logTag_;
 
@@ -112,6 +115,9 @@ class PlaybackPipeline {
   // initial sync.
   int32_t lastSyncBufferMs_ = 0;
   int32_t lastSyncDacLatencyMs_ = 0;
+  uint32_t lastVolume_ = 0;
+  bool lastMuted_ = false;
+  int64_t settingsLogDueUs_ = 0;
 
   size_t queueFullDrops_ = 0;
   RateLimiter queueFullLogLimiter_;

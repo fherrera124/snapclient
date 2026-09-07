@@ -60,14 +60,20 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
   bufferMs_ = s.bufferMs;
   dacFixedLatencyMs_ = s.latencyMs;
 
-  if (bufferMs_ != lastSyncBufferMs_ ||
-      dacFixedLatencyMs_ != lastSyncDacLatencyMs_) {
+  const bool syncChanged = bufferMs_ != lastSyncBufferMs_ ||
+                           dacFixedLatencyMs_ != lastSyncDacLatencyMs_;
+  if (syncChanged) {
     lastSyncBufferMs_ = bufferMs_;
     lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
     sync_.onSettingsChanged(bufferMs_, static_cast<uint32_t>(sampleRate_));
     applyQueueCapacity();
-    BELL_LOG(info, logTag_, "server settings: bufferMs={} latencyMs={}",
-             s.bufferMs, s.latencyMs);
+  }
+  if (syncChanged || s.volume != lastVolume_ || s.muted != lastMuted_) {
+    lastVolume_ = s.volume;
+    lastMuted_ = s.muted;
+    // Runs on SnapcastClient's network task, where a blocking write
+    // delays chunk reception.
+    settingsLogDueUs_ = nowUs() + kSettingsLogSettleUs;
   }
   dsp_.setVolume(static_cast<float>(s.volume) / 100.0f);
   audioSink_.setMuted(s.muted);
@@ -238,7 +244,18 @@ void PlaybackPipeline::lockOntoChunk(DecodedChunk firstItem, int64_t waitUs) {
            preloadedFrames, waitUs);
 }
 
+void PlaybackPipeline::flushSettingsLog() {
+  if (settingsLogDueUs_ == 0 || nowUs() < settingsLogDueUs_) {
+    return;
+  }
+  settingsLogDueUs_ = 0;
+  BELL_LOG(info, logTag_,
+           "server settings: bufferMs={} latencyMs={} volume={} muted={}",
+           bufferMs_, dacFixedLatencyMs_, lastVolume_, lastMuted_);
+}
+
 void PlaybackPipeline::consumeOnce() {
+  flushSettingsLog();
   // Re-size both once DecoderTask reports a chunk size onCodecReady() did
   // not have. Guarded because applyQueueCapacity() is not a no-op.
   const uint32_t samplesPerChunk =
