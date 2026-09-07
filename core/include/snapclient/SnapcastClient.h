@@ -43,6 +43,7 @@ class SnapcastClient : public bell::Task {
     std::string host;
     uint16_t port = 1704;
     std::string clientName = "snapclient-cpp";
+    std::string mac = "02:00:00:00:00:01";
   };
 
   explicit SnapcastClient(Config config);

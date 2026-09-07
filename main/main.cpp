@@ -3,6 +3,7 @@
 #include <bell/utils/Task.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -12,6 +13,7 @@
 
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_system.h"
@@ -144,6 +146,13 @@ class SnapclientTask : public bell::Task {
     }
     if (!settings.hostname().empty()) {
       config.clientName = settings.hostname();
+    }
+    uint8_t mac[6] = {};
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+      char macStr[18];
+      std::snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      config.mac = macStr;
     }
 
     // Advertising a port nothing is bound to is worse than not advertising.

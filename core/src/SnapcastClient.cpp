@@ -121,7 +121,7 @@ bool SnapcastClient::connectAndHandshake() {
   }
 
   HelloMessage hello;
-  hello.mac = "02:00:00:00:00:01";
+  hello.mac = config_.mac;
   hello.hostname = config_.clientName;
   hello.version = "0.1.0";
   hello.clientName = "snapclient-cpp";
