@@ -25,6 +25,7 @@ class DspProcessor {
   DspProcessor();
 
   void switchFlow(DspFlow flow);
+  void setDownmixMono(bool downmix);
   void setParams(DspFlow flow, const DspFilterParams& params);
   void setVolume(float volume);
 
@@ -38,6 +39,7 @@ class DspProcessor {
   DspFlow activeFlow = DspFlow::Stereo;
   std::array<DspFilterParams, 4> flowParams{};
   float volume = 1.0f;
+  bool downmixMono = false;
   // Owned across rebuilds so setVolume() can reconfigure it in place
   // without rebuilding the pipeline.
   std::shared_ptr<bell::dsp::GainTransform> gainTransform;

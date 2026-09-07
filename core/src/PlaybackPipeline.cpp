@@ -54,6 +54,10 @@ void PlaybackPipeline::applyDspSettings(DspFlow flow,
   dsp_.setParams(flow, params);
 }
 
+void PlaybackPipeline::setDownmixMono(bool downmix) {
+  dsp_.setDownmixMono(downmix);
+}
+
 void PlaybackPipeline::onConnected() { sync_.reset(); }
 
 void PlaybackPipeline::onServerSettings(const ServerSettings& s) {

@@ -6,6 +6,7 @@
 #include <bell/dsp/BiquadParameters.h>
 #include <bell/dsp/BiquadTransform.h>
 #include <bell/dsp/GainTransform.h>
+#include <bell/dsp/MixerTransform.h>
 #include <bell/dsp/TransformPipeline.h>
 
 namespace snapclient {
@@ -13,6 +14,7 @@ namespace snapclient {
 using bell::dsp::BiquadParameters;
 using bell::dsp::BiquadTransform;
 using bell::dsp::GainTransform;
+using bell::dsp::MixerTransform;
 using bell::dsp::TransformPipeline;
 
 namespace {
@@ -36,6 +38,11 @@ DspProcessor::DspProcessor() {
 
 void DspProcessor::switchFlow(DspFlow flow) {
   activeFlow = flow;
+  rebuildPipeline();
+}
+
+void DspProcessor::setDownmixMono(bool downmix) {
+  downmixMono = downmix;
   rebuildPipeline();
 }
 
@@ -99,6 +106,13 @@ void DspProcessor::rebuildPipeline() {
   gainTransform->setChannels({0, 1});
   gainTransform->configure(20.0f * log10f(volume));
   pipeline->addTransform(gainTransform);
+
+  if (downmixMono) {
+    // Both outputs get the mix, so a mono amp is fed whichever it takes.
+    auto mixer = std::make_shared<MixerTransform>();
+    mixer->configure({{0, 1}, {0, 1}});
+    pipeline->addTransform(mixer);
+  }
 
   engine.applyPipeline(pipeline);
 }

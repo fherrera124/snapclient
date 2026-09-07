@@ -29,6 +29,13 @@ menu "Snapclient Configuration"
             than tied via an onboard pull-up/pull-down (common on cheap
             breakout boards, in which case leave this at -1).
 
+    config SNAPCLIENT_I2S_DOWNMIX_MONO
+        bool "Downmix to mono"
+        default n
+        help
+            Sums both channels into each one, for boards whose amp is
+            mono and takes a single channel off a stereo I2S stream.
+
     config SNAPSERVER_HOST
         string "Snapserver host"
         default "192.168.1.1"

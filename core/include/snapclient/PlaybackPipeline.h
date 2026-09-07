@@ -29,6 +29,7 @@ class PlaybackPipeline {
                    PrecisionWaiter& waiter, const char* logTag);
 
   void applyDspSettings(DspFlow flow, const DspFilterParams& params);
+  void setDownmixMono(bool downmix);
   void onConnected();
   void onServerSettings(const ServerSettings& s);
   void onCodecReady(Codec codec, const bell::audio::Format& fmt);

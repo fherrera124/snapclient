@@ -186,6 +186,9 @@ class SnapclientTask : public bell::Task {
 
     pipeline = std::make_unique<snapclient::PlaybackPipeline>(
         client, i2sSink, waiter, kLogTag);
+#ifdef CONFIG_SNAPCLIENT_I2S_DOWNMIX_MONO
+    pipeline->setDownmixMono(true);
+#endif
     pipeline->applyDspSettings(settings.activeFlow(),
                                settings.flowParams(settings.activeFlow()));
 
