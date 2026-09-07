@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <new>
 #include <optional>
+#include <sys/poll.h>
 #include <thread>
 
 #include <bell/Logger.h>
@@ -154,6 +156,21 @@ bool SnapcastClient::connectAndHandshake() {
 }
 
 bool SnapcastClient::readAndDispatchOne() {
+  // Bounded so an idle stream still gets a time sync out - the server
+  // tracks liveness by when it last heard from the client.
+  struct pollfd pfd = {socket_.getFd(), POLLIN, 0};
+  const int pollMs =
+      static_cast<int>(std::max<int64_t>(1, pingIntervalUs_ / 1000));
+  const int ready = ::poll(&pfd, 1, pollMs);
+  if (ready == 0 || (ready < 0 && errno == EINTR)) {
+    sendTimeSync();
+    return true;
+  }
+  if (ready < 0) {
+    BELL_LOG(warn, LOG_TAG, "poll failed: errno {}", errno);
+    return false;
+  }
+
   std::array<std::byte, BaseMessage::kWireSize> headerBuf{};
   if (!readExact(headerBuf.data(), headerBuf.size())) {
     BELL_LOG(warn, LOG_TAG, "reading message header failed");
