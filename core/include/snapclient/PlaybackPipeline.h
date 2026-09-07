@@ -123,6 +123,7 @@ class PlaybackPipeline {
   size_t queueFullDrops_ = 0;
   RateLimiter queueFullLogLimiter_;
   size_t starvedPolls_ = 0;
+  int64_t starvedSinceUs_ = 0;
   RateLimiter starvationLogLimiter_;
   std::vector<int16_t> scratchResampled_;
   std::optional<PendingChunk> pendingChunk_;

@@ -34,6 +34,12 @@ bool SyncEngine::latencyReady() const {
   return timeFilter_.isFull(kLatencyFilterFull);
 }
 
+void SyncEngine::onPlaybackGap() {
+  playing_ = false;
+  shortMedian_.clear();
+  miniMedian_.clear();
+}
+
 void SyncEngine::reset() {
   playing_ = false;
   shortMedian_.clear();

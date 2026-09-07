@@ -68,6 +68,8 @@ class SyncEngine {
   void lockWithPreloadedFrames(size_t preloadedFrames, int64_t nowUs);
 
   void reset();
+  // Leaves the clock estimate alone - only playback position is lost.
+  void onPlaybackGap();
 
   // True once evaluate() has found a chunk to start from and hasn't since
   // fallen back to resyncing (queue starvation or a hard resync).

@@ -289,7 +289,14 @@ void PlaybackPipeline::consumeOnce() {
     // early as soon as DecoderTask pushes something.
     if (sync_.isPlaying()) {
       ++starvedPolls_;
-      if (starvationLogLimiter_.due(nowUs())) {
+      const int64_t now = nowUs();
+      if (starvedSinceUs_ == 0) {
+        starvedSinceUs_ = now;
+      } else if (now - starvedSinceUs_ > int64_t{bufferMs_} * 1000) {
+        sync_.onPlaybackGap();
+        starvedSinceUs_ = 0;
+      }
+      if (starvationLogLimiter_.due(now)) {
         BELL_LOG(warn, logTag_,
                  "audio starved: nothing decoded for 10ms ({} times, {} "
                  "chunks waiting) - {} is behind",
@@ -299,6 +306,7 @@ void PlaybackPipeline::consumeOnce() {
     }
     return;
   }
+  starvedSinceUs_ = 0;
 
   // A resumed PendingChunk's timestamp/PCM start partway through the
   // original chunk - offsetFrames is 0 for a freshly popped item, making
