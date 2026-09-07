@@ -55,10 +55,17 @@ ChunkBuffer acquireChunkBuffer(const std::byte* src, size_t len);
 // re-allocate while a slot is still out.
 size_t configureChunkPool(size_t slotBytes, size_t slotCount);
 
-// Slots currently reserved, and how many of those came from the
-// 32-bit-only region.
+// Where the reserved slots came from. Only iram is word-only; dram is the
+// 8-bit heap the encoded payloads also draw on, so slots landing there
+// defeat the point of the pool.
+struct ChunkPoolTiers {
+  size_t psram = 0;
+  size_t iram = 0;
+  size_t dram = 0;
+};
+
 size_t chunkPoolSlots();
-size_t chunkPoolWordOnlySlots();
+ChunkPoolTiers chunkPoolTierCounts();
 
 // Copies src[0..len) into a pool slot; len must be a multiple of 4 and fit
 // one. Warns and falls back to the heap on a miss, which means the pool is

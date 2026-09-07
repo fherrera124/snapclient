@@ -29,6 +29,8 @@ const char* kLogTag = "ChunkBuffer";
 std::atomic<size_t> gPoolMisses{0};
 std::atomic<int64_t> gLastMissLogUs{0};
 
+enum class PoolTier { Psram, Iram, Dram };
+
 #ifdef ESP_PLATFORM
 std::byte* allocateChunkMemory(size_t len) {
   // PSRAM tier: a no-op fast-fail on any board without CONFIG_SPIRAM=y -
@@ -55,8 +57,8 @@ void freeChunkMemory(std::byte* p) {
 // Leftover instruction RAM reaches the heap as a region that only
 // tolerates aligned 32-bit access, and nothing else competes for it - so
 // slots take it before the 8-bit heap the encoded payloads need.
-std::byte* allocatePoolSlot(size_t len, bool& wordOnly) {
-  wordOnly = false;
+std::byte* allocatePoolSlot(size_t len, PoolTier& tier) {
+  tier = PoolTier::Psram;
   if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) >= len) {
     if (auto* p = static_cast<std::byte*>(
             heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))) {
@@ -68,10 +70,11 @@ std::byte* allocatePoolSlot(size_t len, bool& wordOnly) {
   // RISC-V parts), so there is no leftover instruction RAM to take.
   if (auto* p = static_cast<std::byte*>(
           heap_caps_malloc(len, MALLOC_CAP_32BIT | MALLOC_CAP_EXEC))) {
-    wordOnly = true;
+    tier = PoolTier::Iram;
     return p;
   }
 #endif
+  tier = PoolTier::Dram;
   return allocateChunkMemory(len);
 }
 #else
@@ -83,8 +86,8 @@ void freeChunkMemory(std::byte* p) {
   std::free(p);
 }
 
-std::byte* allocatePoolSlot(size_t len, bool& wordOnly) {
-  wordOnly = false;
+std::byte* allocatePoolSlot(size_t len, PoolTier& tier) {
+  tier = PoolTier::Dram;
   return allocateChunkMemory(len);
 }
 #endif
@@ -114,17 +117,27 @@ class ChunkPool {
     }
     owned_.clear();
     free_.clear();
-    wordOnly_ = 0;
+    tiers_ = {};
     slotBytes_ = slotBytes;
     for (size_t i = 0; i < slotCount; ++i) {
-      bool wordOnly = false;
-      std::byte* p = allocatePoolSlot(slotBytes, wordOnly);
+      PoolTier tier = PoolTier::Dram;
+      std::byte* p = allocatePoolSlot(slotBytes, tier);
       if (!p) {
         break;
       }
       owned_.push_back(p);
       free_.push_back(p);
-      wordOnly_ += wordOnly ? 1 : 0;
+      switch (tier) {
+        case PoolTier::Psram:
+          ++tiers_.psram;
+          break;
+        case PoolTier::Iram:
+          ++tiers_.iram;
+          break;
+        case PoolTier::Dram:
+          ++tiers_.dram;
+          break;
+      }
     }
     return owned_.size();
   }
@@ -149,9 +162,9 @@ class ChunkPool {
     return owned_.size();
   }
 
-  size_t wordOnlySlots() {
+  ChunkPoolTiers tierCounts() {
     std::lock_guard<std::mutex> lock(mutex_);
-    return wordOnly_;
+    return tiers_;
   }
 
  private:
@@ -159,7 +172,7 @@ class ChunkPool {
   std::vector<std::byte*> owned_;
   std::vector<std::byte*> free_;
   size_t slotBytes_ = 0;
-  size_t wordOnly_ = 0;
+  ChunkPoolTiers tiers_;
 };
 
 ChunkPool gPool;
@@ -236,7 +249,7 @@ size_t configureChunkPool(size_t slotBytes, size_t slotCount) {
 
 size_t chunkPoolSlots() { return gPool.slots(); }
 
-size_t chunkPoolWordOnlySlots() { return gPool.wordOnlySlots(); }
+ChunkPoolTiers chunkPoolTierCounts() { return gPool.tierCounts(); }
 
 ChunkBuffer acquirePooledChunkBuffer(const std::byte* src, size_t len) {
   if (len % 4 == 0) {

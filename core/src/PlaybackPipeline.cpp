@@ -92,12 +92,14 @@ void PlaybackPipeline::onCodecReady(Codec codec,
   // Reserved once so prepareForOutput()'s resize() never allocates on the
   // audio path; +8 covers frameAdjustment's per-chunk swing.
   scratchResampled_.reserve((expectedSamplesPerChunk + 8) * 2);
-  const size_t poolSlots =
-      configureChunkPool(expectedSamplesPerChunk * kBytesPerFrame,
-                         kPcmQueueCapacity + kPcmBuffersInFlight);
-  BELL_LOG(info, logTag_, "chunk pool: {} slots of {} bytes, {} word-only",
-           poolSlots, expectedSamplesPerChunk * kBytesPerFrame,
-           chunkPoolWordOnlySlots());
+  const size_t requestedSlots = kPcmQueueCapacity + kPcmBuffersInFlight;
+  const size_t poolSlots = configureChunkPool(
+      expectedSamplesPerChunk * kBytesPerFrame, requestedSlots);
+  const ChunkPoolTiers tiers = chunkPoolTierCounts();
+  BELL_LOG(info, logTag_,
+           "chunk pool: {}/{} slots of {} bytes - {} psram, {} iram, {} dram",
+           poolSlots, requestedSlots, expectedSamplesPerChunk * kBytesPerFrame,
+           tiers.psram, tiers.iram, tiers.dram);
   lastSyncBufferMs_ = bufferMs_;
   lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
   sync_.onSettingsChanged(bufferMs_, fmt.getSampleRateValue());
