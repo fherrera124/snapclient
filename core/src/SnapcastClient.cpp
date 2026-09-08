@@ -221,6 +221,8 @@ bool SnapcastClient::readAndDispatchOne() {
         handleTime(*base, payload.data(), payload.size());
         break;
       default:
+        BELL_LOG(warn, LOG_TAG, "unhandled message type {} ({} bytes)",
+                 static_cast<int>(base->type), base->size);
         break;
     }
   } catch (const std::bad_alloc&) {
