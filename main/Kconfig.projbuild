@@ -84,7 +84,9 @@ menu "Snapclient Configuration"
         default 0
         help
             Frees the provisioning task's 8K stack once the window closes.
-            An in-progress provisioning attempt is never cut off.
+            An in-progress provisioning attempt is never cut off. Improv
+            also stops on its own once WiFi connects, so this only matters
+            for a board that never does.
 
     config SNAPCLIENT_SNTP_SERVER
         string "SNTP server"

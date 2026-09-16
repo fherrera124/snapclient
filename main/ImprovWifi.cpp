@@ -18,6 +18,9 @@ namespace snapclient {
 namespace {
 constexpr char kMagic[6] = {'I', 'M', 'P', 'R', 'O', 'V'};
 constexpr const char* kLogTag = "ImprovWifi";
+// Since boot. A client reaches a board that is already online by resetting
+// it, and has to get its frames in before this runs out.
+constexpr int64_t kConnectedGraceUs = 30 * 1000000;
 }  // namespace
 
 std::atomic<bool> ImprovWifi::provisioningInProgress_{false};
@@ -72,10 +75,16 @@ void ImprovWifi::onWifiEvent(void* arg, esp_event_base_t base, int32_t id,
 }
 
 void ImprovWifi::taskLoop() {
-  if (deadlineUs_ > 0 && esp_timer_get_time() > deadlineUs_ &&
-      !provisioningInProgress_) {
-    ESP_LOGI(kLogTag, "provisioning window closed after %d s",
-             CONFIG_SNAPCLIENT_IMPROV_TIMEOUT_S);
+  const int64_t now = esp_timer_get_time();
+  const bool doneConnected = connected_ && now > kConnectedGraceUs;
+  const bool timedOut = deadlineUs_ > 0 && now > deadlineUs_;
+  if ((doneConnected || timedOut) && !provisioningInProgress_) {
+    if (doneConnected) {
+      ESP_LOGI(kLogTag, "WiFi connected, provisioning closed");
+    } else {
+      ESP_LOGI(kLogTag, "provisioning window closed after %d s",
+               CONFIG_SNAPCLIENT_IMPROV_TIMEOUT_S);
+    }
     // Returns from runTask()'s loop, so FreeRTOS reclaims the stack. The
     // console driver stays installed - main.cpp never destroys this.
     taskRunning = false;
