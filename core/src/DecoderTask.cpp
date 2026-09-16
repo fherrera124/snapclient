@@ -36,10 +36,8 @@ DecoderTask::DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
   startTask();
 }
 
-// dsp works on int16 samples, so it has to run on the codec's own output:
-// a pool slot may only tolerate aligned 32-bit access.
-ChunkBuffer DecoderTask::processAndStore(tcb::span<std::byte> pcm,
-                                         bell::audio::SampleRate sampleRate) {
+void DecoderTask::processInPlace(tcb::span<std::byte> pcm,
+                                 bell::audio::SampleRate sampleRate) {
   try {
     dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(), sampleRate);
   } catch (const std::bad_alloc&) {
@@ -54,6 +52,13 @@ ChunkBuffer DecoderTask::processAndStore(tcb::span<std::byte> pcm,
                "dsp out of memory - passing audio through unprocessed");
     }
   }
+}
+
+// dsp works on int16 samples, so it has to run on the codec's own output:
+// a pool slot may only tolerate aligned 32-bit access.
+ChunkBuffer DecoderTask::processAndStore(tcb::span<std::byte> pcm,
+                                         bell::audio::SampleRate sampleRate) {
+  processInPlace(pcm, sampleRate);
   return acquirePooledChunkBuffer(pcm.data(), pcm.size());
 }
 
@@ -86,8 +91,7 @@ void DecoderTask::runTask() {
       } else {
         // Byte-addressable heap, so dsp can work in place here.
         pcm = std::move(item.payload);
-        dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(),
-                     sampleRate);
+        processInPlace({pcm.data(), pcm.size()}, sampleRate);
       }
       if (pcm) {
         samplesPerChunkHint_.store(

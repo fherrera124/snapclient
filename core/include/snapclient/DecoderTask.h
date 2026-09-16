@@ -64,6 +64,8 @@ class DecoderTask : public bell::Task {
   void runTask() override;
 
  private:
+  void processInPlace(tcb::span<std::byte> pcm,
+                      bell::audio::SampleRate sampleRate);
   ChunkBuffer processAndStore(tcb::span<std::byte> pcm,
                               bell::audio::SampleRate sampleRate);
 
