@@ -20,6 +20,11 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=deprecated-literal-operator" 
 idf_build_set_property(COMPILE_OPTIONS "-Wno-error=implicit-fallthrough" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-error=missing-field-initializers" APPEND)
 
+# bell's vendored iqmath returns floats by punning through a pointer, which
+# -O2 and -Os would otherwise be free to miscompile. Silencing the warning
+# alone would keep the hazard.
+idf_build_set_property(COMPILE_OPTIONS "-fno-strict-aliasing" APPEND)
+
 option(BUILD_SHARED_LIBS OFF)
 option(BUILD_TESTING OFF)
 
