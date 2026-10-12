@@ -7,6 +7,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_private/usb_console.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -39,6 +40,8 @@ ImprovWifi::ImprovWifi()
   usb_serial_jtag_driver_config_t cfg =
       USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
   usb_serial_jtag_driver_install(&cfg);
+#elif CONFIG_ESP_CONSOLE_USB_CDC
+  // Startup brought the CDC console up; there is no driver to install.
 #endif
   esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &onWifiEvent, this);
   esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &onWifiEvent, this);
@@ -98,6 +101,14 @@ void ImprovWifi::taskLoop() {
                         buf, sizeof(buf), pdMS_TO_TICKS(100));
 #elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
   len = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(100));
+#elif CONFIG_ESP_CONSOLE_USB_CDC
+  ssize_t got =
+      esp_usb_console_read_buf(reinterpret_cast<char*>(buf), sizeof(buf));
+  len = got > 0 ? static_cast<int>(got) : 0;
+  if (len == 0) {
+    // This read returns immediately, unlike the other two.
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
 #endif
   for (int i = 0; i < len; i++) {
     handleByte(buf[i]);
@@ -385,6 +396,9 @@ void ImprovWifi::writeBytes(const uint8_t* data, size_t len) {
                    reinterpret_cast<const char*>(data), len);
 #elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
   usb_serial_jtag_write_bytes(data, len, portMAX_DELAY);
+#elif CONFIG_ESP_CONSOLE_USB_CDC
+  esp_usb_console_write_buf(reinterpret_cast<const char*>(data), len);
+  esp_usb_console_flush();
 #endif
   funlockfile(stdout);
 }

@@ -15,10 +15,10 @@
 namespace snapclient {
 
 // Improv Serial (improv-wifi.com) WiFi provisioning over whichever
-// interface ESP-IDF's console Kconfig selects (UART or USB-Serial-JTAG).
-// Listens whether or not credentials are already stored - reprovisioning
-// doesn't need a factory reset - and stops once WiFi is connected, though
-// not in the first 30 s after boot, or when
+// interface ESP-IDF's console Kconfig selects (UART, USB-Serial-JTAG or
+// USB CDC). Listens whether or not credentials are already stored -
+// reprovisioning doesn't need a factory reset - and stops once WiFi is
+// connected, though not in the first 30 s after boot, or when
 // CONFIG_SNAPCLIENT_IMPROV_TIMEOUT_S elapses, if that is set.
 class ImprovWifi : public bell::Task {
  public:
