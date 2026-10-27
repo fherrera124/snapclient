@@ -4,6 +4,7 @@
 #include <array>
 
 #include "bell/Logger.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 
 namespace snapclient {
@@ -16,6 +17,8 @@ constexpr size_t kSilenceChunkFrames = 256;
 // jitter before i2s_channel_write()'s blocking becomes an audible stall.
 constexpr size_t kTargetTotalDmaFrames = 2304;
 constexpr size_t kMaxDmaFrameNum = 480;
+// Far beyond any DMA wait; reached only when a slave's clock stops.
+constexpr TickType_t kWriteTimeout = pdMS_TO_TICKS(1000);
 
 // i2s_channel_write() unblocks in dma_frame_num-sized real-time increments
 // however many frames one call carries, so a descriptor size that does not
@@ -44,7 +47,10 @@ void AudioSinkI2S::teardownChannel() {
   if (txChan_ == nullptr) {
     return;
   }
-  i2s_channel_disable(txChan_);
+  if (channelEnabled_) {
+    i2s_channel_disable(txChan_);
+    channelEnabled_ = false;
+  }
   i2s_del_channel(txChan_);
   txChan_ = nullptr;
 }
@@ -64,7 +70,8 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
       std::max<size_t>(4, kTargetTotalDmaFrames / dmaFrameNum);
 
   i2s_chan_config_t chanConfig =
-      I2S_CHANNEL_DEFAULT_CONFIG(config_.port, I2S_ROLE_MASTER);
+      I2S_CHANNEL_DEFAULT_CONFIG(config_.port, config_.slave ? I2S_ROLE_SLAVE
+                                                             : I2S_ROLE_MASTER);
   chanConfig.dma_desc_num = dmaDescNum;
   chanConfig.dma_frame_num = dmaFrameNum;
   chanConfig.auto_clear = true;
@@ -82,7 +89,7 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
                                                        I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
-              .mclk = config_.mclkPin,
+              .mclk = config_.slave ? I2S_GPIO_UNUSED : config_.mclkPin,
               .bclk = config_.bclkPin,
               .ws = config_.wsPin,
               .dout = config_.doutPin,
@@ -107,6 +114,19 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
     return;
   }
 
+  if (config_.slave) {
+    i2s_event_callbacks_t callbacks = {};
+    callbacks.on_sent = &AudioSinkI2S::onSent;
+    err = i2s_channel_register_event_callback(txChan_, &callbacks, this);
+    if (err != ESP_OK) {
+      BELL_LOG(error, LOG_TAG, "registering on_sent failed: {}",
+               static_cast<int>(err));
+      teardownChannel();
+      return;
+    }
+  }
+  currentSampleRate_ = sampleRate;
+
   err = dac_.start(txChan_, sampleRate);
   if (err != ESP_OK) {
     BELL_LOG(error, LOG_TAG, "DAC start failed: {}", static_cast<int>(err));
@@ -114,7 +134,7 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
     return;
   }
 
-  err = i2s_channel_enable(txChan_);
+  err = enableChannel();
   if (err != ESP_OK) {
     BELL_LOG(error, LOG_TAG, "i2s_channel_enable failed: {}",
              static_cast<int>(err));
@@ -124,7 +144,6 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
 
   ringCapacityFrames_ = static_cast<uint32_t>(dmaDescNum * dmaFrameNum);
 
-  currentSampleRate_ = sampleRate;
   currentChunkFrames_ = chunkFrames;
   primeSilence();
   setMuted(false);
@@ -153,7 +172,7 @@ void AudioSinkI2S::write(const std::byte* pcm, size_t len) {
   while (written < len) {
     size_t chunkWritten = 0;
     esp_err_t err = i2s_channel_write(txChan_, pcm + written, len - written,
-                                      &chunkWritten, portMAX_DELAY);
+                                      &chunkWritten, kWriteTimeout);
     if (err != ESP_OK) {
       BELL_LOG(warn, LOG_TAG, "i2s_channel_write failed: {}",
                static_cast<int>(err));
@@ -182,15 +201,32 @@ size_t AudioSinkI2S::preload(const std::byte* pcm, size_t len) {
 }
 
 void AudioSinkI2S::disable() {
-  if (txChan_ != nullptr) {
+  if (txChan_ != nullptr && channelEnabled_) {
     i2s_channel_disable(txChan_);
+    channelEnabled_ = false;
   }
 }
 
 void AudioSinkI2S::enable() {
-  if (txChan_ != nullptr) {
-    i2s_channel_enable(txChan_);
+  if (txChan_ != nullptr && !channelEnabled_) {
+    enableChannel();
   }
+}
+
+esp_err_t AudioSinkI2S::enableChannel() {
+  // The channel is idle, so its interrupt cannot run during the reset.
+  drift_.reset(esp_timer_get_time(), currentSampleRate_);
+  esp_err_t err = i2s_channel_enable(txChan_);
+  channelEnabled_ = err == ESP_OK;
+  return err;
+}
+
+bool AudioSinkI2S::onSent(i2s_chan_handle_t, i2s_event_data_t* event,
+                          void* ctx) {
+  auto* self = static_cast<AudioSinkI2S*>(ctx);
+  self->drift_.onFramesSent(event->size / kBytesPerFrame,
+                            esp_timer_get_time());
+  return false;
 }
 
 }  // namespace snapclient

@@ -51,10 +51,11 @@ class SyncEngine {
   // chunk's actual frame count, not a fixed assumption - it varies by
   // codec (and, for PCM, by the server's chunk_ms setting).
   // minLockLeadUs is how far ahead a chunk must be due before this
-  // commits to it; 0 accepts any chunk not already late.
+  // commits to it; 0 accepts any chunk not already late. outputDriftUs is
+  // AudioSink::clockDriftUs().
   SyncResult evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
                       int32_t dacLatencyUs, size_t chunkFrames,
-                      int64_t minLockLeadUs);
+                      int64_t minLockLeadUs, int64_t outputDriftUs = 0);
 
   // Call after writing a chunk (or after a WaitMore/DropLate outcome,
   // frameCount=0), so the virtual playback clock stays accurate.

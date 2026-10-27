@@ -30,6 +30,11 @@ class AudioSink {
   // Frames the output path can hold buffered ahead of playback (e.g.
   // dma_desc_num * dma_frame_num). 0 if not configured.
   virtual uint32_t ringCapacityFrames() const = 0;
+
+  // How much later than its nominal sample rate the output has played
+  // since the last enable(), in local microseconds. Non-zero only for an
+  // output clocked by something other than the local timebase.
+  virtual int64_t clockDriftUs() const { return 0; }
 };
 
 }  // namespace snapclient

@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "DacControl.h"
+#include "snapclient/ClockDriftEstimator.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "snapclient/AudioSink.h"
@@ -23,6 +24,8 @@ class AudioSinkI2S : public snapclient::AudioSink {
     gpio_num_t wsPin = GPIO_NUM_NC;
     gpio_num_t doutPin = GPIO_NUM_NC;
     gpio_num_t mclkPin = I2S_GPIO_UNUSED;
+    // BCK and LRCK come from the DAC. mclkPin is then ignored.
+    bool slave = false;
   };
 
   // dac must outlive the sink.
@@ -46,18 +49,26 @@ class AudioSinkI2S : public snapclient::AudioSink {
 
   uint32_t ringCapacityFrames() const override { return ringCapacityFrames_; }
 
+  // Measured only as a slave; a master's clock is the local one.
+  int64_t clockDriftUs() const override { return drift_.driftUs(); }
+
  private:
   const char* LOG_TAG = "AudioSinkI2S";
 
   Config config_;
   DacControl& dac_;
   i2s_chan_handle_t txChan_ = nullptr;
+  // IDF logs an error for disabling a channel that is not enabled.
+  bool channelEnabled_ = false;
+  ClockDriftEstimator drift_;
   uint32_t currentSampleRate_ = 0;
   uint32_t currentChunkFrames_ = 0;
   uint32_t ringCapacityFrames_ = 0;
 
   void teardownChannel();
   void primeSilence();
+  esp_err_t enableChannel();
+  static bool onSent(i2s_chan_handle_t, i2s_event_data_t* event, void* ctx);
 };
 
 }  // namespace snapclient

@@ -47,12 +47,12 @@ class SteadyStateDriver {
 
   // One evaluate() call whose `age` equals ageUs exactly, then advances the
   // virtual playback clock by one test chunk.
-  SyncResult step(int64_t ageUs) {
+  SyncResult step(int64_t ageUs, int64_t outputDriftUs = 0) {
     const int64_t actual = actualPlayLocalUs();
     const int64_t chunkServerTimeUs = actual - ageUs - bufferUs_;
     auto result = engine_.evaluate(chunkServerTimeUs, actual,
                                    /*dacLatencyUs=*/0, kFramesPerTestChunk,
-                                   /*minLockLeadUs=*/0);
+                                   /*minLockLeadUs=*/0, outputDriftUs);
     engine_.onFramesWritten(kFramesPerTestChunk);
     samplesWritten_ += kFramesPerTestChunk;
     return result;
@@ -100,6 +100,31 @@ void test_hard_resync_does_not_fire_under_threshold() {
     CHECK(!result.hardResync);
   }
   CHECK(driver.engine().isPlaying());
+}
+
+// An output that is its own clock master: on-time chunks, but the output
+// itself has fallen behind by more than the threshold.
+void test_output_drift_counts_toward_hard_resync() {
+  SteadyStateDriver driver(/*bufferMs=*/500, /*sampleRate=*/48000);
+  driver.start(/*nowUs=*/1'000'000);
+
+  SyncResult result;
+  for (int i = 0; i < 99; i++) {
+    result = driver.step(/*ageUs=*/0, kHardResyncThresholdUs + 1);
+  }
+  CHECK(result.hardResync);
+}
+
+void test_moderate_output_drift_drops_frames() {
+  SteadyStateDriver driver(/*bufferMs=*/500, /*sampleRate=*/48000);
+  driver.start(/*nowUs=*/1'000'000);
+
+  SyncResult result;
+  for (int i = 0; i < 150; i++) {
+    result = driver.step(/*ageUs=*/0, /*outputDriftUs=*/500);
+  }
+  CHECK(!result.hardResync);
+  CHECK(result.frameAdjustment < 0);
 }
 
 // steadyStateFrameAdjustment()'s shortM/miniM/age must all agree past
@@ -206,6 +231,8 @@ void test_initial_sync_skip_reaches_the_lock_window() {
 int main() {
   snapclient::test_hard_resync_fires_past_threshold();
   snapclient::test_hard_resync_does_not_fire_under_threshold();
+  snapclient::test_output_drift_counts_toward_hard_resync();
+  snapclient::test_moderate_output_drift_drops_frames();
   snapclient::test_steady_state_gate_requires_agreement();
   snapclient::test_lock_with_preloaded_frames_seeds_virtual_clock();
   snapclient::test_initial_sync_drops_a_due_chunk_instead_of_playing_it();

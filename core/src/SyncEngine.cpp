@@ -49,7 +49,8 @@ void SyncEngine::reset() {
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
                                 int32_t dacLatencyUs, size_t chunkFrames,
-                                int64_t minLockLeadUs) {
+                                int64_t minLockLeadUs,
+                                int64_t outputDriftUs) {
   const int64_t diffToServer = timeFilter_.offsetAt(nowUs);
   const int64_t serverNowUs = nowUs + diffToServer;
   const int64_t bufferUs = int64_t{bufferMs_} * 1000;
@@ -81,7 +82,8 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
   // Both sides are write frontiers, so the DMA backlog sits on both and
   // cancels - it must not be subtracted here.
   const int64_t actualPlayLocalUs =
-      playbackStartTimeUs_ + (samplesWritten_ * int64_t{1000000}) / sampleRate_;
+      playbackStartTimeUs_ +
+      (samplesWritten_ * int64_t{1000000}) / sampleRate_ + outputDriftUs;
   const int64_t targetPlayLocalUs =
       chunkServerTimeUs - diffToServer + bufferUs - dacLatencyUs;
   const int64_t age = actualPlayLocalUs - targetPlayLocalUs;
@@ -92,9 +94,9 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
   if (shortMedian_.full() && std::abs(shortMedian_.median()) > kHardResyncThresholdUs) {
     BELL_LOG(warn, kLogTag,
              "hard resync: age={} shortMedian={} miniMedian={} "
-             "diffToServer={} dacLatencyUs={}",
+             "diffToServer={} dacLatencyUs={} outputDriftUs={}",
              age, shortMedian_.median(), miniMedian_.median(), diffToServer,
-             dacLatencyUs);
+             dacLatencyUs, outputDriftUs);
     playing_ = false;
     shortMedian_.clear();
     miniMedian_.clear();

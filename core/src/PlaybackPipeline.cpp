@@ -321,7 +321,8 @@ void PlaybackPipeline::consumeOnce() {
   const int32_t dacLatencyUs = static_cast<int32_t>(dacFixedLatencyMs_) * 1000;
 
   auto result = sync_.evaluate(itemServerTimeUs, nowUs(), dacLatencyUs,
-                               pcmLen / kBytesPerFrame, minLockLeadUs());
+                               pcmLen / kBytesPerFrame, minLockLeadUs(),
+                               audioSink_.clockDriftUs());
 
   if (result.decision == PlayDecision::WaitMore) {
     lockOntoChunk(std::move(item), result.waitUs);
