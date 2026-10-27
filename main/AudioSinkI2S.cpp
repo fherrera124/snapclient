@@ -12,6 +12,7 @@ namespace snapclient {
 namespace {
 constexpr uint32_t kPrimeSilenceMs = 100;
 constexpr size_t kBytesPerFrame = 2 /*channels*/ * sizeof(int16_t);
+constexpr uint32_t kBitsPerFrame = kBytesPerFrame * 8;
 constexpr size_t kSilenceChunkFrames = 256;
 // ~48ms at 48kHz - how much hardware buffering absorbs write() scheduling
 // jitter before i2s_channel_write()'s blocking becomes an audible stall.
@@ -104,7 +105,21 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
   // Force the high-precision Audio PLL clock source. Parts without one
   // (ESP32-S3 and later) keep the default PLL and its fractional divider.
   stdConfig.clk_cfg.clk_src = I2S_CLK_SRC_APLL;
+  // IDF runs the APLL at twice the sampling clock, and caps it at 125 MHz.
+  constexpr uint32_t kMaxSlaveSamplingHz = 62'500'000;
+#else
+  // The sampling clock must divide the 160 MHz PLL by at least two.
+  constexpr uint32_t kMaxSlaveSamplingHz = 80'000'000;
 #endif
+
+  // A slave samples the external BCK with its own clock, which IDF runs at
+  // only 8x BCK by default. That leaves DOUT late enough, often enough, to
+  // click; run it as fast as the clock source allows.
+  if (config_.slave) {
+    const uint32_t bckHz = sampleRate * kBitsPerFrame;
+    stdConfig.clk_cfg.bclk_div =
+        std::max<uint32_t>(8, kMaxSlaveSamplingHz / bckHz);
+  }
 
   err = i2s_channel_init_std_mode(txChan_, &stdConfig);
   if (err != ESP_OK) {
