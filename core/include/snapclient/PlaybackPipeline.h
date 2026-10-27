@@ -49,7 +49,7 @@ class PlaybackPipeline {
     size_t framesConsumed = 0;
   };
 
-  // Runs DynamicResampler on pcm[0..len) into scratchResampled_, returns
+  // Runs FrameSplicer on pcm[0..len) into scratchResampled_, returns
   // the resulting frame count. pcm is already dsp-processed by DecoderTask
   // before it ever reaches here.
   size_t prepareForOutput(const std::byte* pcm, size_t len,

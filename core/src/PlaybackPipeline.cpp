@@ -7,7 +7,7 @@
 
 #include <bell/Logger.h>
 
-#include "snapclient/DynamicResampler.h"
+#include "snapclient/FrameSplicer.h"
 
 namespace snapclient {
 
@@ -186,8 +186,6 @@ size_t PlaybackPipeline::prepareForOutput(const std::byte* pcm, size_t len,
                                          int frameAdjustment) {
   const size_t frames = len / kBytesPerFrame;
 
-  // Resampled across the whole chunk, not a single-frame drop/duplicate at
-  // the edge, since the magnitude can now exceed one frame.
   const size_t targetFrames =
       static_cast<size_t>(static_cast<int>(frames) + frameAdjustment);
   scratchResampled_.resize(targetFrames * 2);  // stereo
@@ -195,8 +193,8 @@ size_t PlaybackPipeline::prepareForOutput(const std::byte* pcm, size_t len,
     std::fill(scratchResampled_.begin(), scratchResampled_.end(), 0);
     return targetFrames;
   }
-  DynamicResampler::process(reinterpret_cast<const int16_t*>(pcm), frames,
-                            scratchResampled_.data(), targetFrames);
+  FrameSplicer::process(reinterpret_cast<const int16_t*>(pcm), frames,
+                        scratchResampled_.data(), targetFrames);
   return targetFrames;
 }
 

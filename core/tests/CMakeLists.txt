@@ -15,3 +15,6 @@ target_link_libraries(clock_drift_estimator_test PRIVATE snapclient_core)
 
 add_executable(pcm_layout_test pcm_layout_test.cpp)
 target_link_libraries(pcm_layout_test PRIVATE snapclient_core)
+
+add_executable(frame_splicer_test frame_splicer_test.cpp)
+target_link_libraries(frame_splicer_test PRIVATE snapclient_core)
