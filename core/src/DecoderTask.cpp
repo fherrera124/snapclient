@@ -1,6 +1,7 @@
 #include "snapclient/DecoderTask.h"
 
 #include <bell/Logger.h>
+#include <bell/audio/SampleConversion.h>
 #include <tcb/span.hpp>
 
 #include <chrono>
@@ -88,6 +89,12 @@ void DecoderTask::runTask() {
         if (auto decoded = client_.decodeFlac(encoded)) {
           pcm = processAndStore(decoded->pcm(), sampleRate);
         }
+      } else if (const PcmLayout layout = client_.pcmLayout();
+                 !layout.isS16()) {
+        const size_t len = bell::audio::narrowToS16(
+            {item.payload.data(), item.payload.size()}, layout.bits,
+            layout.containerBytes);
+        pcm = processAndStore({item.payload.data(), len}, sampleRate);
       } else {
         // Byte-addressable heap, so dsp can work in place here.
         pcm = std::move(item.payload);

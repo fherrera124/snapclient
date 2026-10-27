@@ -12,3 +12,6 @@ target_link_libraries(pcm5122_driver_test PRIVATE snapclient_core)
 
 add_executable(clock_drift_estimator_test clock_drift_estimator_test.cpp)
 target_link_libraries(clock_drift_estimator_test PRIVATE snapclient_core)
+
+add_executable(pcm_layout_test pcm_layout_test.cpp)
+target_link_libraries(pcm_layout_test PRIVATE snapclient_core)

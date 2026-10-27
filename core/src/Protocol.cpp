@@ -156,6 +156,7 @@ std::optional<CodecHeaderMessage> CodecHeaderMessage::parse(
     if (payloadLen >= 36) {
       m.channels = readU16LE(codecPayload + 22);
       m.sampleRate = readU32LE(codecPayload + 24);
+      m.blockAlign = readU16LE(codecPayload + 32);
       m.bits = readU16LE(codecPayload + 34);
     }
   } else if (name == "flac") {

@@ -327,6 +327,20 @@ bool SnapcastClient::handleCodecHeader(const std::byte* payload, size_t len) {
                header->sampleRate);
       return false;
     }
+    if (activeCodec_ == Codec::Pcm) {
+      // Wider samples are narrowed to S16 in DecoderTask, as FLAC's are.
+      const auto layout =
+          pcmLayoutFor(header->bits, header->channels, header->blockAlign);
+      if (!layout) {
+        BELL_LOG(error, LOG_TAG,
+                 "unsupported pcm format: {} bits, {} bytes per frame, {} ch",
+                 header->bits, header->blockAlign, header->channels);
+        return false;
+      }
+      pcmBits_.store(layout->bits, std::memory_order_relaxed);
+      pcmContainerBytes_.store(layout->containerBytes,
+                               std::memory_order_relaxed);
+    }
     pcmFormat_ = bell::audio::Format(header->channels,
                                      bell::audio::SampleFormat::S16,
                                      *sampleRate);

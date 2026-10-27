@@ -73,6 +73,8 @@ struct CodecHeaderMessage {
   uint32_t sampleRate = 0;
   uint16_t bits = 0;
   uint16_t channels = 0;
+  // Bytes per frame; Pcm only.
+  uint16_t blockAlign = 0;
   // Raw FLAC codec-payload bytes (magic + metadata blocks) - unlike
   // Opus/Pcm, FLAC's real format lives in STREAMINFO inside these, which
   // FlacCodec::setupDecodeFromHeaders() parses itself. Empty for other

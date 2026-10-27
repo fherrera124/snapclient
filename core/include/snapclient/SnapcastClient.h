@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -14,6 +15,7 @@
 #include <tcb/span.hpp>
 
 #include "snapclient/ChunkBuffer.h"
+#include "snapclient/PcmLayout.h"
 #include "snapclient/Protocol.h"
 #include "snapclient/RateLimiter.h"
 
@@ -103,6 +105,12 @@ class SnapcastClient : public bell::Task {
   // refined afterwards.
   uint32_t expectedSamplesPerChunk() const { return expectedSamplesPerChunk_; }
 
+  // Layout of raw Pcm payloads, from the last Pcm codec header.
+  PcmLayout pcmLayout() const {
+    return {pcmBits_.load(std::memory_order_relaxed),
+            pcmContainerBytes_.load(std::memory_order_relaxed)};
+  }
+
  protected:
   void taskLoop() override;
   void wakeTask() override;
@@ -129,6 +137,8 @@ class SnapcastClient : public bell::Task {
   bell::audio::Format pcmFormat_;
   Codec activeCodec_ = Codec::None;
   uint32_t expectedSamplesPerChunk_ = 0;
+  std::atomic<uint8_t> pcmBits_{16};
+  std::atomic<uint8_t> pcmContainerBytes_{2};
   // Last codec set up, kept across reconnects - unlike activeCodec_, which
   // connectAndHandshake() resets, so a codec change (which also drops the
   // connection) would otherwise look like a first header.
