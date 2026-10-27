@@ -1,5 +1,6 @@
 build
 build-host
+build.*
 libopus
 managed_components
 sdkconfig
