@@ -25,6 +25,10 @@
 
 #include "AudioSinkI2S.h"
 #include "DacControlGpio.h"
+#if CONFIG_SNAPCLIENT_DAC_ALLO_BOSS
+#include "DacControlAlloBoss.h"
+#include "EspI2cBus.h"
+#endif
 #include "EthernetLink.h"
 #include "GptimerWaiter.h"
 #include "ImprovWifi.h"
@@ -60,6 +64,9 @@ snapclient::AudioSinkI2S::Config buildSinkConfig() {
   sinkConfig.wsPin = static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_WS_GPIO);
   sinkConfig.doutPin = static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_DOUT_GPIO);
   sinkConfig.mclkPin = static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MCLK_GPIO);
+#if CONFIG_SNAPCLIENT_I2S_SLAVE
+  sinkConfig.slave = true;
+#endif
   return sinkConfig;
 }
 
@@ -174,7 +181,15 @@ class SnapclientTask : public bell::Task {
     snapclient::SnapcastClient client(config);
     const auto mutePin =
         static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MUTE_GPIO);
+#if CONFIG_SNAPCLIENT_DAC_ALLO_BOSS
+    snapclient::EspI2cBus i2cBus(
+        static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_DAC_I2C_SDA_GPIO),
+        static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_DAC_I2C_SCL_GPIO));
+    snapclient::DacControlAlloBoss dac(i2cBus, CONFIG_SNAPCLIENT_DAC_I2C_ADDR,
+                                       mutePin);
+#else
     snapclient::DacControlGpio dac(mutePin);
+#endif
     snapclient::AudioSinkI2S i2sSink(buildSinkConfig(), dac);
     snapclient::GptimerWaiter waiter;
 

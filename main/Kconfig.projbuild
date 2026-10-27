@@ -48,6 +48,32 @@ menu "Snapclient Configuration"
         int "Web server (settings UI + HTTP API) port"
         default 80
 
+    choice SNAPCLIENT_DAC
+        prompt "DAC"
+        default SNAPCLIENT_DAC_PASSIVE
+
+        config SNAPCLIENT_DAC_PASSIVE
+            bool "Passive I2S DAC (PCM5102A, MAX98357A, ...)"
+
+        config SNAPCLIENT_DAC_ALLO_BOSS
+            bool "Allo Boss (PCM5122, I2S master)"
+            select SNAPCLIENT_I2S_SLAVE if !SNAPCLIENT_ALLO_BOSS_SLAVE
+            help
+                The Boss drives BCK and LRCK from its own oscillators, so
+                the ESP32 receives them. Needs the DAC I2C pins below.
+    endchoice
+
+    config SNAPCLIENT_I2S_SLAVE
+        bool
+
+    config SNAPCLIENT_ALLO_BOSS_SLAVE
+        bool "Run the Boss as I2S slave"
+        depends on SNAPCLIENT_DAC_ALLO_BOSS
+        default n
+        help
+            Turns the Boss's oscillators off and clocks it from the ESP32.
+            Power-cycle both boards after switching roles.
+
     config SNAPCLIENT_DAC_I2C_SDA_GPIO
         int "DAC I2C SDA GPIO (-1 if unused)"
         default -1

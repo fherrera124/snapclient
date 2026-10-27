@@ -7,5 +7,8 @@ target_link_libraries(chunk_pool_test PRIVATE snapclient_core)
 add_executable(flac_codec_test flac_codec_test.cpp)
 target_link_libraries(flac_codec_test PRIVATE bell)
 
+add_executable(pcm5122_driver_test pcm5122_driver_test.cpp)
+target_link_libraries(pcm5122_driver_test PRIVATE snapclient_core)
+
 add_executable(clock_drift_estimator_test clock_drift_estimator_test.cpp)
 target_link_libraries(clock_drift_estimator_test PRIVATE snapclient_core)

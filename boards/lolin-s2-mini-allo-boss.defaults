@@ -1,0 +1,17 @@
+# Allo Boss 1.2 as I2S master, on top of lolin-s2-mini.defaults.
+#
+#   idf.py -B build.lolin-s2-boss -DIDF_TARGET=esp32s2 \
+#     -DSDKCONFIG=sdkconfig.lolin-s2-boss \
+#     -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/lolin-s2-mini.defaults;boards/lolin-s2-mini-allo-boss.defaults" build
+#
+# Pi header pin -> S2 Mini GPIO:
+#   12 BCK -> 13, 35 LRCK -> 11, 40 DIN -> 12,
+#   3 SDA -> 8, 5 SCL -> 9, 31 mute (GPIO6) -> 7, 1 3V3 -> 3V3, 6 GND.
+# Pin 1 only powers the I2C pull-ups, but I2C fails without it.
+# 5V either from the Boss's USB-C, or pin 2 from VBUS, never both.
+CONFIG_SNAPCLIENT_DAC_ALLO_BOSS=y
+CONFIG_SNAPCLIENT_I2S_BCLK_GPIO=13
+CONFIG_SNAPCLIENT_DAC_I2C_SDA_GPIO=8
+CONFIG_SNAPCLIENT_DAC_I2C_SCL_GPIO=9
+CONFIG_SNAPCLIENT_DAC_I2C_ADDR=0x4D
+CONFIG_SNAPCLIENT_I2S_MUTE_GPIO=7
