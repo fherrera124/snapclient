@@ -31,17 +31,8 @@ size_t chooseDmaFrameNum(uint32_t chunkFrames) {
 }
 }  // namespace
 
-AudioSinkI2S::AudioSinkI2S(Config config) : config_(config) {
-  if (config_.mutePin != GPIO_NUM_NC) {
-    gpio_config_t muteConf = {
-        .pin_bit_mask = 1ULL << config_.mutePin,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&muteConf);
-  }
+AudioSinkI2S::AudioSinkI2S(Config config, DacControl& dac)
+    : config_(config), dac_(dac) {
   setMuted(true);
 }
 
@@ -116,6 +107,13 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
     return;
   }
 
+  err = dac_.start(txChan_, sampleRate);
+  if (err != ESP_OK) {
+    BELL_LOG(error, LOG_TAG, "DAC start failed: {}", static_cast<int>(err));
+    teardownChannel();
+    return;
+  }
+
   err = i2s_channel_enable(txChan_);
   if (err != ESP_OK) {
     BELL_LOG(error, LOG_TAG, "i2s_channel_enable failed: {}",
@@ -166,10 +164,7 @@ void AudioSinkI2S::write(const std::byte* pcm, size_t len) {
 }
 
 void AudioSinkI2S::setMuted(bool muted) {
-  if (config_.mutePin == GPIO_NUM_NC) {
-    return;
-  }
-  gpio_set_level(config_.mutePin, muted ? 0 : 1);
+  dac_.setMuted(muted);
 }
 
 size_t AudioSinkI2S::preload(const std::byte* pcm, size_t len) {

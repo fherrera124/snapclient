@@ -24,6 +24,7 @@
 #include "sdkconfig.h"
 
 #include "AudioSinkI2S.h"
+#include "DacControlGpio.h"
 #include "EthernetLink.h"
 #include "GptimerWaiter.h"
 #include "ImprovWifi.h"
@@ -59,7 +60,6 @@ snapclient::AudioSinkI2S::Config buildSinkConfig() {
   sinkConfig.wsPin = static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_WS_GPIO);
   sinkConfig.doutPin = static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_DOUT_GPIO);
   sinkConfig.mclkPin = static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MCLK_GPIO);
-  sinkConfig.mutePin = static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MUTE_GPIO);
   return sinkConfig;
 }
 
@@ -172,7 +172,10 @@ class SnapclientTask : public bell::Task {
       }
     }
     snapclient::SnapcastClient client(config);
-    snapclient::AudioSinkI2S i2sSink(buildSinkConfig());
+    const auto mutePin =
+        static_cast<gpio_num_t>(CONFIG_SNAPCLIENT_I2S_MUTE_GPIO);
+    snapclient::DacControlGpio dac(mutePin);
+    snapclient::AudioSinkI2S i2sSink(buildSinkConfig(), dac);
     snapclient::GptimerWaiter waiter;
 
     pipeline = std::make_unique<snapclient::PlaybackPipeline>(

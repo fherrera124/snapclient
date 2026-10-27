@@ -3,14 +3,15 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "DacControl.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "snapclient/AudioSink.h"
 
 namespace snapclient {
 
-// Direct, synchronous ESP-IDF i2s_std sink for a PCM5102A-class DAC (pure
-// I2S, no I2C control bus). No internal buffering or task: write() blocks
+// Direct, synchronous ESP-IDF i2s_std sink. The DAC's own bring-up and mute
+// go through DacControl. No internal buffering or task: write() blocks
 // on i2s_channel_write() on the caller's own thread, since SyncEngine's
 // per-chunk pacing already happens there and must not be blurred by
 // another buffering layer. 16-bit stereo only.
@@ -22,12 +23,10 @@ class AudioSinkI2S : public snapclient::AudioSink {
     gpio_num_t wsPin = GPIO_NUM_NC;
     gpio_num_t doutPin = GPIO_NUM_NC;
     gpio_num_t mclkPin = I2S_GPIO_UNUSED;
-    // GPIO_NUM_NC disables mute handling entirely (e.g. XSMT tied via an
-    // onboard pull-up, not software-controlled).
-    gpio_num_t mutePin = GPIO_NUM_NC;
   };
 
-  explicit AudioSinkI2S(Config config);
+  // dac must outlive the sink.
+  AudioSinkI2S(Config config, DacControl& dac);
   ~AudioSinkI2S();
 
   AudioSinkI2S(const AudioSinkI2S&) = delete;
@@ -39,7 +38,6 @@ class AudioSinkI2S : public snapclient::AudioSink {
 
   void write(const std::byte* pcm, size_t len) override;
 
-  // No-op if Config::mutePin is GPIO_NUM_NC.
   void setMuted(bool muted) override;
 
   size_t preload(const std::byte* pcm, size_t len) override;
@@ -52,6 +50,7 @@ class AudioSinkI2S : public snapclient::AudioSink {
   const char* LOG_TAG = "AudioSinkI2S";
 
   Config config_;
+  DacControl& dac_;
   i2s_chan_handle_t txChan_ = nullptr;
   uint32_t currentSampleRate_ = 0;
   uint32_t currentChunkFrames_ = 0;
