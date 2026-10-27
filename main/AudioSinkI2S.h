@@ -42,6 +42,7 @@ class AudioSinkI2S : public snapclient::AudioSink {
   void write(const std::byte* pcm, size_t len) override;
 
   void setMuted(bool muted) override;
+  bool setVolume(float gain) override { return dac_.setVolume(gain); }
 
   size_t preload(const std::byte* pcm, size_t len) override;
   void disable() override;

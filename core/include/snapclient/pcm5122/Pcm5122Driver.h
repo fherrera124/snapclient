@@ -25,6 +25,10 @@ struct Pcm5122MasterDividers {
 std::optional<Pcm5122MasterDividers> pcm5122MasterDividers(
     uint32_t sckHz, uint32_t sampleRate, uint32_t bckPerFrame);
 
+// Digital volume register value for a linear gain: 0.5 dB steps from
+// 0x30 (0 dB) down, 0xFF (mute) at or below -103.5 dB. Above 1 is 0 dB.
+uint8_t pcm5122VolumeCode(float gain);
+
 // Page 0 registers only; nothing here needs another page.
 class Pcm5122Driver {
  public:
@@ -33,6 +37,8 @@ class Pcm5122Driver {
   bool reset();
   bool setStandby(bool standby);
   bool setMuted(bool muted);
+  // Both channels; the chip ramps to it on its own.
+  bool setVolumeCode(uint8_t code);
 
   // Hands the GPIOs in mask (bit n-1 = GPIOn) to setGpioLevels().
   bool enableRegisterGpios(uint8_t mask);

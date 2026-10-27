@@ -67,4 +67,8 @@ bool AlloBossDac::setMuted(bool muted) {
   return dac_.setMuted(muted);
 }
 
+bool AlloBossDac::setVolumeCode(uint8_t code) {
+  return dac_.setVolumeCode(code);
+}
+
 }  // namespace snapclient

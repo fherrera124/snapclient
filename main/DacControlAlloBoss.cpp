@@ -48,4 +48,17 @@ void DacControlAlloBoss::setMuted(bool muted) {
   boss_.setMuted(muted);
 }
 
+bool DacControlAlloBoss::setVolume(float gain) {
+  const uint8_t code = pcm5122VolumeCode(gain);
+  if (code != volumeCode_) {
+    if (boss_.setVolumeCode(code)) {
+      volumeCode_ = code;
+    } else {
+      BELL_LOG(error, LOG_TAG, "volume write failed");
+      volumeCode_ = -1;
+    }
+  }
+  return true;
+}
+
 }  // namespace snapclient

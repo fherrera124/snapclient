@@ -1,5 +1,7 @@
 #include "snapclient/pcm5122/Pcm5122Driver.h"
 
+#include <cmath>
+
 namespace snapclient {
 
 namespace {
@@ -25,6 +27,8 @@ constexpr uint8_t kRegFsSpeedMode = 34;
 constexpr uint8_t kRegIdac1 = 35;
 constexpr uint8_t kRegIdac2 = 36;
 constexpr uint8_t kRegErrorDetect = 37;
+constexpr uint8_t kRegVolumeLeft = 61;
+constexpr uint8_t kRegVolumeRight = 62;
 constexpr uint8_t kRegI2s1 = 40;
 constexpr uint8_t kRegI2s2 = 41;
 constexpr uint8_t kRegGpioOutput1 = 80;
@@ -46,6 +50,8 @@ constexpr uint8_t kErrorDetectManualClocks = 0x7B;
 // IDCH: no SCK in slave mode, so do not halt for its absence.
 constexpr uint8_t kErrorDetectNoSck = 0x08;
 constexpr uint8_t kI2s16Bit = 0x00;
+constexpr uint8_t kVolume0Db = 0x30;
+constexpr uint8_t kVolumeMute = 0xFF;
 
 constexpr uint32_t kDspMaxHz = 50'000'000;
 constexpr uint32_t kDacMaxHz = 6'144'000;
@@ -109,6 +115,15 @@ std::optional<Pcm5122MasterDividers> pcm5122MasterDividers(
   return d;
 }
 
+uint8_t pcm5122VolumeCode(float gain) {
+  if (!(gain > 0.0f)) {
+    return kVolumeMute;
+  }
+  const float db = std::fmin(20.0f * std::log10(gain), 0.0f);
+  const long code = std::lround(kVolume0Db - 2.0f * db);
+  return code >= kVolumeMute ? kVolumeMute : static_cast<uint8_t>(code);
+}
+
 Pcm5122Driver::Pcm5122Driver(I2cBus& bus, uint8_t deviceAddr)
     : bus_(bus), deviceAddr_(deviceAddr) {}
 
@@ -133,6 +148,10 @@ bool Pcm5122Driver::setStandby(bool standby) {
 
 bool Pcm5122Driver::setMuted(bool muted) {
   return writeByte(kRegMute, muted ? kMuteBoth : 0);
+}
+
+bool Pcm5122Driver::setVolumeCode(uint8_t code) {
+  return writeByte(kRegVolumeLeft, code) && writeByte(kRegVolumeRight, code);
 }
 
 bool Pcm5122Driver::enableRegisterGpios(uint8_t mask) {

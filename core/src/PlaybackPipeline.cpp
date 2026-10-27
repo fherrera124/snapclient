@@ -79,7 +79,8 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
     // delays chunk reception.
     settingsLogDueUs_ = nowUs() + kSettingsLogSettleUs;
   }
-  dsp_.setVolume(static_cast<float>(s.volume) / 100.0f);
+  const float volume = static_cast<float>(s.volume) / 100.0f;
+  dsp_.setVolume(audioSink_.setVolume(volume) ? 1.0f : volume);
   audioSink_.setMuted(s.muted);
 }
 

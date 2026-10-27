@@ -17,6 +17,9 @@ class AudioSink {
   virtual void configure(uint32_t sampleRate, uint32_t chunkFrames) = 0;
   virtual void write(const std::byte* pcm, size_t len) = 0;
   virtual void setMuted(bool muted) = 0;
+  // Linear gain in [0, 1]. True when the output applies it itself, so the
+  // samples must reach it at full scale.
+  virtual bool setVolume(float /*gain*/) { return false; }
 
   // Non-blocking, best-effort: pushes as much of pcm[0..len) into the
   // output buffer as currently fits, returning bytes actually accepted

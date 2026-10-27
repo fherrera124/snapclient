@@ -149,6 +149,25 @@ void test_boss_start_unsupported_rate_stays_in_standby() {
   CHECK(bus.regs.count(kRegGpioControl1) == 0);
 }
 
+void test_volume_codes() {
+  CHECK(pcm5122VolumeCode(1.0f) == 0x30);
+  CHECK(pcm5122VolumeCode(2.0f) == 0x30);  // no boost
+  CHECK(pcm5122VolumeCode(0.5f) == 0x3C);  // -6.02 dB, rounds to -6
+  CHECK(pcm5122VolumeCode(0.1f) == 0x58);  // -20 dB
+  CHECK(pcm5122VolumeCode(0.01f) == 0x80);  // -40 dB
+  CHECK(pcm5122VolumeCode(0.0f) == 0xFF);
+  CHECK(pcm5122VolumeCode(-1.0f) == 0xFF);
+  CHECK(pcm5122VolumeCode(1e-7f) == 0xFF);  // -140 dB, past the range
+}
+
+void test_volume_writes_both_channels() {
+  FakePcm5122Bus bus;
+  Pcm5122Driver dac(bus);
+  CHECK(dac.setVolumeCode(0x58));
+  CHECK(bus.regs[61] == 0x58);
+  CHECK(bus.regs[62] == 0x58);
+}
+
 }  // namespace
 }  // namespace snapclient
 
@@ -161,6 +180,8 @@ int main() {
   snapclient::test_boss_start_44k1_picks_gpio6_oscillator();
   snapclient::test_boss_start_without_sck_stays_in_standby();
   snapclient::test_boss_start_unsupported_rate_stays_in_standby();
+  snapclient::test_volume_codes();
+  snapclient::test_volume_writes_both_channels();
 
   if (gFailures > 0) {
     std::fprintf(stderr, "%d failure(s)\n", gFailures);

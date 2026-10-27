@@ -20,6 +20,7 @@ class AlloBossDac {
   bool start(uint32_t sampleRate);
 
   bool setMuted(bool muted);
+  bool setVolumeCode(uint8_t code);
 
   // Both oscillators off; BCK and LRCK come from the host.
   bool startSlave();
