@@ -64,8 +64,8 @@ struct ServerSettingsMessage {
 
 enum class Codec { None, Pcm, Opus, Flac };
 
-// Snapcast always encodes Opus as 20ms frames at 48kHz. Pcm/Flac have no
-// equivalent constant - their chunk size is only known once one arrives.
+// Snapcast always encodes Opus as 20ms frames at 48kHz. Pcm and Flac have no
+// fixed size: Flac's comes from STREAMINFO, Pcm's from the first chunk.
 constexpr uint32_t kOpusSamplesPerChunk = 960;
 
 struct CodecHeaderMessage {
