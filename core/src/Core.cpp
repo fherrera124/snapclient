@@ -148,8 +148,9 @@ bool dspSmokeTest() {
           break;
         case DspFlow::BassBoost:
         case DspFlow::EQBassTreble:
-          // A boosted low shelf should raise a 100Hz tone's peak.
-          ok = outPeak0 > inPeak;
+          // The shelf gives back most of the headroom taken for it, on both
+          // channels alike.
+          ok = outPeak0 == outPeak1 && outPeak0 > inPeak / 2;
           break;
         case DspFlow::Stereo:
           break;

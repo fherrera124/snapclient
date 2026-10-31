@@ -3,8 +3,10 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <vector>
 
 #include <bell/audio/Common.h>
+#include <bell/dsp/BiquadParameters.h>
 #include <bell/dsp/Engine.h>
 #include <bell/dsp/GainTransform.h>
 
@@ -18,6 +20,10 @@ struct DspFilterParams {
   float freqTertiaryHz = 0.0f;
   float gainTertiaryDb = 0.0f;
 };
+
+// Highest gain the cascade reaches between 20 Hz and 20 kHz, in dB; 0 when
+// it never rises above unity.
+float biquadPeakGainDb(std::vector<bell::dsp::BiquadParameters> stages);
 
 // Two-channel S16 interleaved PCM, same format in and out.
 class DspProcessor {

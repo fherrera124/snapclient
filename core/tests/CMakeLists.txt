@@ -18,3 +18,6 @@ target_link_libraries(pcm_layout_test PRIVATE snapclient_core)
 
 add_executable(frame_splicer_test frame_splicer_test.cpp)
 target_link_libraries(frame_splicer_test PRIVATE snapclient_core)
+
+add_executable(dsp_processor_test dsp_processor_test.cpp)
+target_link_libraries(dsp_processor_test PRIVATE snapclient_core)
