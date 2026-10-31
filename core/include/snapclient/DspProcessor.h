@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -25,7 +26,7 @@ struct DspFilterParams {
 // it never rises above unity.
 float biquadPeakGainDb(std::vector<bell::dsp::BiquadParameters> stages);
 
-// Two-channel S16 interleaved PCM, same format in and out.
+// Two-channel interleaved PCM, S16 in and S32 out.
 class DspProcessor {
  public:
   DspProcessor();
@@ -35,8 +36,10 @@ class DspProcessor {
   void setParams(DspFlow flow, const DspFilterParams& params);
   void setVolume(float volume);
 
-  void process(const std::byte* in, size_t inLen, std::byte* out,
-               size_t outLen, bell::audio::SampleRate sampleRate);
+  // out is full scale at INT32_MAX. Throws std::bad_alloc when the engine
+  // cannot size its buffers.
+  void process(const int16_t* in, int32_t* out, size_t frames,
+               bell::audio::SampleRate sampleRate);
 
  private:
   void rebuildPipeline();

@@ -49,7 +49,7 @@ constexpr uint8_t kSckMissing = 0x40;
 constexpr uint8_t kErrorDetectManualClocks = 0x7B;
 // IDCH: no SCK in slave mode, so do not halt for its absence.
 constexpr uint8_t kErrorDetectNoSck = 0x08;
-constexpr uint8_t kI2s16Bit = 0x00;
+constexpr uint8_t kI2s32Bit = 0x03;
 constexpr uint8_t kVolume0Db = 0x30;
 constexpr uint8_t kVolumeMute = 0xFF;
 
@@ -185,7 +185,7 @@ bool Pcm5122Driver::configureMaster(const Pcm5122MasterDividers& d) {
          writeByte(kRegMasterMode, kMasterDividersRunning) &&
          writeByte(kRegErrorDetect, kErrorDetectManualClocks) &&
          writeByte(kRegPllEn, 0) &&
-         writeByte(kRegI2s1, kI2s16Bit) &&
+         writeByte(kRegI2s1, kI2s32Bit) &&
          writeByte(kRegI2s2, 0) &&
          writeByte(kRegDacRef, kDacRefSck) &&
          writeByte(kRegDspClkDiv, d.dsp - 1) &&
@@ -209,7 +209,7 @@ bool Pcm5122Driver::configureSlave() {
          writeByte(kRegPllRef, kPllRefBck) &&
          writeByte(kRegErrorDetect, kErrorDetectNoSck) &&
          writeByte(kRegPllEn, 1) &&
-         writeByte(kRegI2s1, kI2s16Bit) &&
+         writeByte(kRegI2s1, kI2s32Bit) &&
          writeByte(kRegI2s2, 0);
 }
 

@@ -14,8 +14,8 @@ constexpr uint8_t kGpio6Osc44k1 = 0x20;
 constexpr uint32_t kOsc48kHz = 49'152'000;
 constexpr uint32_t kOsc44k1Hz = 45'158'400;
 
-// 16-bit stereo.
-constexpr uint32_t kBckPerFrame = 32;
+// 32-bit stereo.
+constexpr uint32_t kBckPerFrame = 64;
 
 // What Linux waits before reading the clock detector.
 constexpr auto kSckSettle = std::chrono::milliseconds(2);

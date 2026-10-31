@@ -3,9 +3,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <new>
 #include <thread>
 
 #include <bell/Logger.h>
+
+#ifdef ESP_PLATFORM
+#include <bell/utils/EspMemoryResource.h>
+#include "esp_heap_caps.h"
+#endif
 
 #include "snapclient/FrameSplicer.h"
 
@@ -33,6 +39,20 @@ const char* codecName(Codec codec) {
   return "unknown";
 }
 
+// The DMA never reads it, so it need not be internal.
+std::pmr::memory_resource* outputBufferResource() {
+#ifdef ESP_PLATFORM
+  static bell::utils::EspFallbackMemoryResource<
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT>
+      psramThenInternal;
+  if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) {
+    return &psramThenInternal;
+  }
+#endif
+  return std::pmr::get_default_resource();
+}
+
 }  // namespace
 
 PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
@@ -42,11 +62,13 @@ PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
       waiter_(waiter),
       queue_(kQueueCapacity),
       pcmQueue_(kPcmQueueCapacity),
-      decoder_(queue_, pcmQueue_, codecGeneration_, client, dsp_,
-              sampleRateHz_, samplesPerChunkHint_),
+      decoder_(queue_, pcmQueue_, codecGeneration_, client,
+              samplesPerChunkHint_),
       client_(client),
       queueFullLogLimiter_(kLossLogIntervalUs),
-      starvationLogLimiter_(kLossLogIntervalUs) {}
+      starvationLogLimiter_(kLossLogIntervalUs),
+      dspFailureLogLimiter_(kLossLogIntervalUs),
+      scratchOutput_(kOutputBlockFrames * 2, outputBufferResource()) {}
 
 void PlaybackPipeline::applyDspSettings(DspFlow flow,
                                         const DspFilterParams& params) {
@@ -198,6 +220,46 @@ size_t PlaybackPipeline::prepareForOutput(const std::byte* pcm, size_t len,
   return targetFrames;
 }
 
+size_t PlaybackPipeline::output(size_t frames, bool preload) {
+  size_t done = 0;
+  while (done < frames) {
+    const size_t n = std::min(frames - done, kOutputBlockFrames);
+    processBlock(scratchResampled_.data() + done * 2, n);
+    const auto* block =
+        reinterpret_cast<const std::byte*>(scratchOutput_.data());
+    const size_t len = n * kSinkBytesPerFrame;
+    if (!preload) {
+      audioSink_.write(block, len);
+      done += n;
+      continue;
+    }
+    const size_t accepted = audioSink_.preload(block, len) / kSinkBytesPerFrame;
+    done += accepted;
+    if (accepted < n) {
+      break;
+    }
+  }
+  return done;
+}
+
+void PlaybackPipeline::processBlock(const int16_t* in, size_t frames) {
+  try {
+    dsp_.process(in, scratchOutput_.data(), frames,
+                 static_cast<bell::audio::SampleRate>(
+                     sampleRateHz_.load(std::memory_order_relaxed)));
+  } catch (const std::bad_alloc&) {
+    // Playing without the DSP beats losing the device to a slot the engine
+    // could not size.
+    for (size_t i = 0; i < frames * 2; i++) {
+      scratchOutput_[i] = int32_t{in[i]} * 65536;
+    }
+    if (dspFailureLogLimiter_.due(nowUs())) {
+      BELL_LOG(error, logTag_,
+               "dsp out of memory - passing audio through unprocessed");
+    }
+  }
+}
+
 // lockOntoChunk() must preload the whole ring before its armed deadline,
 // and decode runs near real time - hence the ring duration plus margin.
 int64_t PlaybackPipeline::minLockLeadUs() const {
@@ -216,24 +278,22 @@ void PlaybackPipeline::lockOntoChunk(DecodedChunk firstItem, int64_t waitUs) {
   DecodedChunk item = std::move(firstItem);
   size_t offsetFrames = 0;
   for (;;) {
+    // Only what fits goes through the DSP, so the remainder later resumes
+    // from the filter state this left.
+    const size_t ring = audioSink_.ringCapacityFrames();
+    const size_t room = ring > preloadedFrames ? ring - preloadedFrames : 0;
     const size_t itemFrames = item.frames() - offsetFrames;
-    const size_t frames = prepareForOutput(item.dataAt(offsetFrames),
-                                           itemFrames * kBytesPerFrame,
-                                           /*frameAdjustment=*/0);
-    const size_t requestedBytes = frames * kBytesPerFrame;
-    const size_t accepted = audioSink_.preload(
-        reinterpret_cast<const std::byte*>(scratchResampled_.data()),
-        requestedBytes);
-    const size_t acceptedFrames = accepted / kBytesPerFrame;
+    const size_t frames = prepareForOutput(
+        item.dataAt(offsetFrames), std::min(itemFrames, room) * kBytesPerFrame,
+        /*frameAdjustment=*/0);
+    const size_t acceptedFrames = output(frames, /*preload=*/true);
     preloadedFrames += acceptedFrames;
 
-    if (accepted < requestedBytes) {
+    if (acceptedFrames < itemFrames) {
       // Output filled up mid-chunk - keep the exact unaccepted remainder
       // for consumeOnce() to finish normally next, instead of dropping it.
-      if (acceptedFrames < itemFrames) {
-        pendingChunk_ =
-            PendingChunk{std::move(item), offsetFrames + acceptedFrames};
-      }
+      pendingChunk_ =
+          PendingChunk{std::move(item), offsetFrames + acceptedFrames};
       break;
     }
     if (!pcmQueue_.tryPop(item, 2000)) {
@@ -331,8 +391,7 @@ void PlaybackPipeline::consumeOnce() {
   if (result.decision == PlayDecision::Play) {
     const size_t targetFrames =
         prepareForOutput(pcm, pcmLen, result.frameAdjustment);
-    audioSink_.write(reinterpret_cast<const std::byte*>(scratchResampled_.data()),
-                     targetFrames * kBytesPerFrame);
+    output(targetFrames, /*preload=*/false);
 
     // Tell SyncEngine the actual frames just written
     sync_.onFramesWritten(targetFrames);

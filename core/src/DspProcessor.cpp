@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <memory>
 
 #include <bell/dsp/BiquadTransform.h>
@@ -20,6 +21,21 @@ using bell::dsp::TransformPipeline;
 
 namespace {
 constexpr float kShelfQ = 0.707f;
+
+// The engine works in IQ30, where 1.0 is 1 << 30 and one bit of headroom
+// sits above it.
+constexpr int32_t kS16ToIq30 = 1 << 15;
+constexpr int32_t kIq30One = 1 << 30;
+
+int32_t iq30ToS32Saturating(int32_t iq30) {
+  if (iq30 >= kIq30One) {
+    return INT32_MAX;
+  }
+  if (iq30 < -kIq30One) {
+    return INT32_MIN;
+  }
+  return iq30 * 2;
+}
 
 // A BiquadTransform filters only the first channel it is given.
 std::shared_ptr<BiquadTransform> makeBiquad(
@@ -169,10 +185,20 @@ void DspProcessor::rebuildPipeline() {
   engine.applyPipeline(pipeline);
 }
 
-void DspProcessor::process(const std::byte* in, size_t inLen, std::byte* out,
-                           size_t outLen, bell::audio::SampleRate sampleRate) {
-  bell::audio::Format format(2, bell::audio::SampleFormat::S16, sampleRate);
-  engine.process(in, inLen, out, outLen, format);
+void DspProcessor::process(const int16_t* in, int32_t* out, size_t frames,
+                           bell::audio::SampleRate sampleRate) {
+  const size_t samples = frames * 2;
+  for (size_t i = 0; i < samples; i++) {
+    out[i] = int32_t{in[i]} * kS16ToIq30;
+  }
+  // The engine takes and returns S32 as raw IQ30.
+  bell::audio::Format format(2, bell::audio::SampleFormat::S32, sampleRate);
+  auto* bytes = reinterpret_cast<std::byte*>(out);
+  const size_t len = samples * sizeof(int32_t);
+  engine.process(bytes, len, bytes, len, format);
+  for (size_t i = 0; i < samples; i++) {
+    out[i] = iq30ToS32Saturating(out[i]);
+  }
 }
 
 }  // namespace snapclient

@@ -5,6 +5,9 @@
 
 namespace snapclient {
 
+// write() and preload() take interleaved stereo S32, full scale at INT32_MAX.
+constexpr size_t kSinkBytesPerFrame = 2 * sizeof(int32_t);
+
 // What SyncEngine's caller (PlaybackPipeline) needs from an audio output -
 // deliberately only what consumeOnce() actually calls, so a test double
 // can implement it trivially.

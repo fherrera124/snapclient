@@ -106,7 +106,8 @@ bool dspSmokeTest() {
     input[i * 2] = sample;
     input[i * 2 + 1] = sample;
   }
-  std::vector<int16_t> output(kFrames * 2);
+  std::vector<int32_t> output(kFrames * 2);
+  std::vector<int16_t> output16(kFrames * 2);
   int16_t inPeak = peakOnChannel(input, 0);
 
   const FlowCase cases[] = {
@@ -124,10 +125,7 @@ bool dspSmokeTest() {
 
     bool ok = true;
     try {
-      dsp.process(reinterpret_cast<const std::byte*>(input.data()),
-                  input.size() * sizeof(int16_t),
-                  reinterpret_cast<std::byte*>(output.data()),
-                  output.size() * sizeof(int16_t),
+      dsp.process(input.data(), output.data(), kFrames,
                   bell::audio::SampleRate::SR_44100HZ);
     } catch (const std::exception& e) {
       BELL_LOG(error, LOG_TAG, "{}: threw: {}", c.name, e.what());
@@ -135,8 +133,11 @@ bool dspSmokeTest() {
     }
 
     if (ok) {
-      int16_t outPeak0 = peakOnChannel(output, 0);
-      int16_t outPeak1 = peakOnChannel(output, 1);
+      for (size_t i = 0; i < output.size(); i++) {
+        output16[i] = static_cast<int16_t>(output[i] >> 16);
+      }
+      int16_t outPeak0 = peakOnChannel(output16, 0);
+      int16_t outPeak1 = peakOnChannel(output16, 1);
       BELL_LOG(info, LOG_TAG, "{}: in={} out_ch0={} out_ch1={}", c.name,
                inPeak, outPeak0, outPeak1);
 

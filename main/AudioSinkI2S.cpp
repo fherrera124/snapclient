@@ -11,12 +11,12 @@ namespace snapclient {
 
 namespace {
 constexpr uint32_t kPrimeSilenceMs = 100;
-constexpr size_t kBytesPerFrame = 2 /*channels*/ * sizeof(int16_t);
-constexpr uint32_t kBitsPerFrame = kBytesPerFrame * 8;
-constexpr size_t kSilenceChunkFrames = 256;
+constexpr uint32_t kBitsPerFrame = kSinkBytesPerFrame * 8;
+constexpr size_t kSilenceChunkFrames = 128;
 // ~48ms at 48kHz - how much hardware buffering absorbs write() scheduling
 // jitter before i2s_channel_write()'s blocking becomes an audible stall.
 constexpr size_t kTargetTotalDmaFrames = 2304;
+// 480 frames of 8 bytes fit IDF's 4092-byte DMA buffer.
 constexpr size_t kMaxDmaFrameNum = 480;
 // Far beyond any DMA wait; reached only when a slave's clock stops.
 constexpr TickType_t kWriteTimeout = pdMS_TO_TICKS(1000);
@@ -30,6 +30,14 @@ size_t chooseDmaFrameNum(uint32_t chunkFrames) {
   size_t frameNum = chunkFrames > 0 ? chunkFrames : kMaxDmaFrameNum;
   while (frameNum > kMaxDmaFrameNum && frameNum % 2 == 0) {
     frameNum /= 2;
+  }
+  // Still too long once odd: its largest divisor that fits.
+  if (frameNum > kMaxDmaFrameNum) {
+    size_t divisor = kMaxDmaFrameNum;
+    while (frameNum % divisor != 0) {
+      divisor--;
+    }
+    frameNum = divisor;
   }
   return frameNum;
 }
@@ -86,7 +94,7 @@ void AudioSinkI2S::configure(uint32_t sampleRate, uint32_t chunkFrames) {
 
   i2s_std_config_t stdConfig = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sampleRate),
-      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
                                                        I2S_SLOT_MODE_STEREO),
       .gpio_cfg =
           {
@@ -169,12 +177,13 @@ void AudioSinkI2S::primeSilence() {
   // buffer - this runs before playback starts, when a single large
   // contiguous allocation is least likely to find room next to whatever
   // else (WiFi, HTTP, the PCM chunk pool) has already claimed heap space.
-  std::array<std::byte, kSilenceChunkFrames * kBytesPerFrame> silenceChunk{};
+  std::array<std::byte, kSilenceChunkFrames * kSinkBytesPerFrame>
+      silenceChunk{};
   size_t framesRemaining = currentSampleRate_ * kPrimeSilenceMs / 1000;
   while (framesRemaining > 0) {
     const size_t framesThisWrite =
         std::min(framesRemaining, kSilenceChunkFrames);
-    write(silenceChunk.data(), framesThisWrite * kBytesPerFrame);
+    write(silenceChunk.data(), framesThisWrite * kSinkBytesPerFrame);
     framesRemaining -= framesThisWrite;
   }
 }
@@ -239,7 +248,7 @@ esp_err_t AudioSinkI2S::enableChannel() {
 bool AudioSinkI2S::onSent(i2s_chan_handle_t, i2s_event_data_t* event,
                           void* ctx) {
   auto* self = static_cast<AudioSinkI2S*>(ctx);
-  self->drift_.onFramesSent(event->size / kBytesPerFrame,
+  self->drift_.onFramesSent(event->size / kSinkBytesPerFrame,
                             esp_timer_get_time());
   return false;
 }

@@ -15,7 +15,7 @@ namespace snapclient {
 // go through DacControl. No internal buffering or task: write() blocks
 // on i2s_channel_write() on the caller's own thread, since SyncEngine's
 // per-chunk pacing already happens there and must not be blurred by
-// another buffering layer. 16-bit stereo only.
+// another buffering layer. 32-bit stereo only.
 class AudioSinkI2S : public snapclient::AudioSink {
  public:
   struct Config {

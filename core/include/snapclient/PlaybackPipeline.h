@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory_resource>
 #include <optional>
 #include <vector>
 
@@ -50,10 +51,15 @@ class PlaybackPipeline {
   };
 
   // Runs FrameSplicer on pcm[0..len) into scratchResampled_, returns
-  // the resulting frame count. pcm is already dsp-processed by DecoderTask
-  // before it ever reaches here.
+  // the resulting frame count.
   size_t prepareForOutput(const std::byte* pcm, size_t len,
                           int frameAdjustment);
+
+  // Runs the DSP on scratchResampled_[0..frames) and hands it to the sink,
+  // preloading it while the output is disabled. Returns the frames the sink
+  // took, short of frames only when a preload fills the output.
+  size_t output(size_t frames, bool preload);
+  void processBlock(const int16_t* in, size_t frames);
 
   // Preloads real upcoming audio into the (disabled) output during the
   // wait, so real content is already queued the instant output resumes
@@ -83,6 +89,7 @@ class PlaybackPipeline {
   static constexpr size_t kPcmBuffersInFlight = 4;
   // A volume slider sends one settings message per tick while dragging.
   static constexpr int64_t kSettingsLogSettleUs = 200'000;
+  static constexpr size_t kOutputBlockFrames = 256;
 
   const char* logTag_;
 
@@ -93,8 +100,7 @@ class PlaybackPipeline {
   BoundedQueue<QueuedChunk> queue_;
   BoundedQueue<DecodedChunk> pcmQueue_;
   std::atomic<uint32_t> codecGeneration_{0};
-  // Raw Hz value of sampleRate_ below - shared with DecoderTask (which
-  // dsp-processes chunks on its own thread) since it needs it too.
+  // Raw Hz value of sampleRate_ below, for the consumer's thread.
   std::atomic<uint32_t> sampleRateHz_{44100};
   // Best known samples-per-chunk: seeded in onCodecReady(), refined by
   // DecoderTask from real decoded sizes.
@@ -125,7 +131,9 @@ class PlaybackPipeline {
   size_t starvedPolls_ = 0;
   int64_t starvedSinceUs_ = 0;
   RateLimiter starvationLogLimiter_;
+  RateLimiter dspFailureLogLimiter_;
   std::vector<int16_t> scratchResampled_;
+  std::pmr::vector<int32_t> scratchOutput_;
   std::optional<PendingChunk> pendingChunk_;
 };
 

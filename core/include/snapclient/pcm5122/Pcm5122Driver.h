@@ -47,10 +47,10 @@ class Pcm5122Driver {
 
   bool sckPresent(bool& present);
 
-  // I2S format, 16-bit words, BCK and LRCK driven by the chip.
+  // I2S format, 32-bit words, BCK and LRCK driven by the chip.
   bool configureMaster(const Pcm5122MasterDividers& dividers);
 
-  // I2S format, 16-bit words, BCK and LRCK in, PLL fed from BCK.
+  // I2S format, 32-bit words, BCK and LRCK in, PLL fed from BCK.
   bool configureSlave();
 
  private:

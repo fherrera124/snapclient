@@ -111,11 +111,11 @@ void test_boss_start_48k_picks_gpio3_oscillator() {
   CHECK(boss.start(48000));
   CHECK(bus.regs[kRegGpioEn] == 0x2C);
   CHECK(bus.regs[kRegGpioControl1] == (0x04 | 0x08));
-  CHECK(bus.regs[kRegMasterClkDiv1] == 31);
-  CHECK(bus.regs[kRegMasterClkDiv2] == 31);
+  CHECK(bus.regs[kRegMasterClkDiv1] == 15);
+  CHECK(bus.regs[kRegMasterClkDiv2] == 63);
   CHECK(bus.regs[kRegIdac1] == 0x04);
   CHECK(bus.regs[kRegIdac2] == 0x00);
-  CHECK(bus.regs[kRegI2s1] == 0x00);
+  CHECK(bus.regs[kRegI2s1] == 0x03);
   // Out of standby only as the very last step.
   CHECK(!bus.log.empty());
   CHECK(bus.log.back() == std::make_pair(kRegPower, uint8_t{0}));
@@ -144,7 +144,7 @@ void test_boss_start_unsupported_rate_stays_in_standby() {
   bus.regs[kRegPower] = 0;
   Pcm5122Driver driver(bus);
   AlloBossDac boss(driver);
-  CHECK(!boss.start(8000));
+  CHECK(!boss.start(4000));
   CHECK(bus.regs[kRegPower] == 0x10);
   CHECK(bus.regs.count(kRegGpioControl1) == 0);
 }

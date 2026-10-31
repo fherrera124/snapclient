@@ -41,38 +41,40 @@ std::vector<int16_t> tone(float hz, int16_t amplitude) {
   return pcm;
 }
 
-std::vector<int16_t> run(DspFlow flow, const DspFilterParams& params,
-                         const std::vector<int16_t>& in) {
+std::vector<int32_t> run(DspFlow flow, const DspFilterParams& params,
+                         const std::vector<int16_t>& in, float volume = 1.0f) {
   DspProcessor dsp;
   dsp.setParams(flow, params);
   dsp.switchFlow(flow);
-  std::vector<int16_t> out(in.size());
-  dsp.process(reinterpret_cast<const std::byte*>(in.data()),
-              in.size() * sizeof(int16_t),
-              reinterpret_cast<std::byte*>(out.data()),
-              out.size() * sizeof(int16_t), bell::audio::SampleRate::SR_44100HZ);
+  dsp.setVolume(volume);
+  std::vector<int32_t> out(in.size());
+  dsp.process(in.data(), out.data(), in.size() / 2,
+              bell::audio::SampleRate::SR_44100HZ);
   return out;
 }
 
 // Over the second half only, past the filters' settling.
-int peak(const std::vector<int16_t>& pcm, size_t channel) {
-  int p = 0;
+template <typename T>
+int64_t peak(const std::vector<T>& pcm, size_t channel) {
+  int64_t p = 0;
   for (size_t i = kFrames / 2; i < kFrames; i++) {
-    p = std::max(p, std::abs(static_cast<int>(pcm[2 * i + channel])));
+    p = std::max(p, std::abs(static_cast<int64_t>(pcm[2 * i + channel])));
   }
   return p;
 }
 
-int railHits(const std::vector<int16_t>& pcm) {
+int railHits(const std::vector<int32_t>& pcm) {
   int hits = 0;
-  for (int16_t v : pcm) {
-    hits += (v == 32767 || v == -32768) ? 1 : 0;
+  for (int32_t v : pcm) {
+    hits += (v == INT32_MAX || v == INT32_MIN) ? 1 : 0;
   }
   return hits;
 }
 
-float db(int out, int in) {
-  return 20.0f * std::log10(static_cast<float>(out) / static_cast<float>(in));
+// out is S32, in is S16.
+float db(int64_t out, int64_t in) {
+  return 20.0f * std::log10(static_cast<float>(out) /
+                            static_cast<float>(in * 65536));
 }
 
 BiquadParameters shelf(BiquadParameters::Type type, float hz, float gainDb) {
@@ -101,7 +103,18 @@ void testPeakGain() {
 void testStereoIsTransparent() {
   const auto in = tone(1000, 30000);
   const auto out = run(DspFlow::Stereo, {}, in);
-  CHECK(out == in);
+  bool exact = true;
+  for (size_t i = 0; i < in.size(); i++) {
+    exact = exact && out[i] == int32_t{in[i]} * 65536;
+  }
+  CHECK(exact);
+}
+
+void testVolumeKeepsLowBits() {
+  const std::vector<int16_t> in(kFrames * 2, 1);
+  const auto out = run(DspFlow::Stereo, {}, in, 0.25f);
+  CHECK(std::abs(out[0] - 16384) < 64);
+  CHECK(out[0] == out[1]);
 }
 
 void testBothChannelsFiltered() {
@@ -129,7 +142,7 @@ void testCrossoverNeedsNoHeadroom() {
   const auto in = tone(50, 8000);
   const auto out = run(DspFlow::Biamp, {500, 0, 500, 0}, in);
   CHECK(std::abs(db(peak(out, 0), peak(in, 0))) < 0.2f);
-  CHECK(peak(out, 1) < peak(in, 1) / 10);
+  CHECK(peak(out, 1) < peak(in, 1) * 65536 / 10);
 }
 
 }  // namespace
@@ -138,6 +151,7 @@ void testCrossoverNeedsNoHeadroom() {
 int main() {
   snapclient::testPeakGain();
   snapclient::testStereoIsTransparent();
+  snapclient::testVolumeKeepsLowBits();
   snapclient::testBothChannelsFiltered();
   snapclient::testFullScaleBoostDoesNotClip();
   snapclient::testHeadroomLowersTheRest();

@@ -1,22 +1,24 @@
 #include "snapclient/DecoderTask.h"
 
-#include <bell/Logger.h>
 #include <bell/audio/SampleConversion.h>
 #include <tcb/span.hpp>
-
-#include <chrono>
-#include <new>
 
 #include "snapclient/SnapcastClient.h"
 
 namespace snapclient {
 
+namespace {
+
+ChunkBuffer store(tcb::span<const std::byte> pcm) {
+  return acquirePooledChunkBuffer(pcm.data(), pcm.size());
+}
+
+}  // namespace
 
 DecoderTask::DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
                          BoundedQueue<DecodedChunk>& pcmQueue,
                          std::atomic<uint32_t>& codecGeneration,
-                         SnapcastClient& client, DspProcessor& dsp,
-                         std::atomic<uint32_t>& sampleRateHz,
+                         SnapcastClient& client,
                          std::atomic<uint32_t>& samplesPerChunkHint)
     // Above SnapcastClient's priority (4) - pcmQueue_'s 2-slot margin is
     // far thinner than queue_'s (tens of chunks), so decode losing the CPU
@@ -31,36 +33,8 @@ DecoderTask::DecoderTask(BoundedQueue<QueuedChunk>& rawQueue,
       pcmQueue_(pcmQueue),
       codecGeneration_(codecGeneration),
       client_(client),
-      dsp_(dsp),
-      sampleRateHz_(sampleRateHz),
       samplesPerChunkHint_(samplesPerChunkHint) {
   startTask();
-}
-
-void DecoderTask::processInPlace(tcb::span<std::byte> pcm,
-                                 bell::audio::SampleRate sampleRate) {
-  try {
-    dsp_.process(pcm.data(), pcm.size(), pcm.data(), pcm.size(), sampleRate);
-  } catch (const std::bad_alloc&) {
-    // process() is in place, so the chunk simply goes out unprocessed.
-    // Playing without the DSP beats losing the device to a slot the
-    // engine could not size.
-    const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now().time_since_epoch())
-                            .count();
-    if (dspFailureLogLimiter_.due(now)) {
-      BELL_LOG(error, "decoder",
-               "dsp out of memory - passing audio through unprocessed");
-    }
-  }
-}
-
-// dsp works on int16 samples, so it has to run on the codec's own output:
-// a pool slot may only tolerate aligned 32-bit access.
-ChunkBuffer DecoderTask::processAndStore(tcb::span<std::byte> pcm,
-                                         bell::audio::SampleRate sampleRate) {
-  processInPlace(pcm, sampleRate);
-  return acquirePooledChunkBuffer(pcm.data(), pcm.size());
 }
 
 void DecoderTask::runTask() {
@@ -74,31 +48,26 @@ void DecoderTask::runTask() {
       continue;
     }
 
-    const auto sampleRate = static_cast<bell::audio::SampleRate>(
-        sampleRateHz_.load(std::memory_order_relaxed));
-
     ChunkBuffer pcm;
     if (item.payload) {
       const tcb::span<const std::byte> encoded(item.payload.data(),
                                                item.payload.size());
       if (item.codec == Codec::Opus) {
         if (auto decoded = client_.decodeOpus(encoded)) {
-          pcm = processAndStore(decoded->pcm(), sampleRate);
+          pcm = store(decoded->pcm());
         }
       } else if (item.codec == Codec::Flac) {
         if (auto decoded = client_.decodeFlac(encoded)) {
-          pcm = processAndStore(decoded->pcm(), sampleRate);
+          pcm = store(decoded->pcm());
         }
       } else if (const PcmLayout layout = client_.pcmLayout();
                  !layout.isS16()) {
         const size_t len = bell::audio::narrowToS16(
             {item.payload.data(), item.payload.size()}, layout.bits,
             layout.containerBytes);
-        pcm = processAndStore({item.payload.data(), len}, sampleRate);
+        pcm = store({item.payload.data(), len});
       } else {
-        // Byte-addressable heap, so dsp can work in place here.
         pcm = std::move(item.payload);
-        processInPlace({pcm.data(), pcm.size()}, sampleRate);
       }
       if (pcm) {
         samplesPerChunkHint_.store(
