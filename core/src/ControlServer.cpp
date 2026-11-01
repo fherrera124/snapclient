@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <bell/Logger.h>
 #include <bell/http/Reader.h>
@@ -17,13 +18,53 @@
 #include "snapclient/SnapcastDiscovery.h"
 
 #ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
+#include <freertos/task.h>
 #endif
 
 namespace snapclient {
 
 namespace {
 const char* kLogTag = "ControlServer";
+
+#ifdef ESP_PLATFORM
+tao::json::value heapJson(uint32_t caps) {
+  tao::json::value obj;
+  obj["free"] = heap_caps_get_free_size(caps);
+  obj["largestBlock"] = heap_caps_get_largest_free_block(caps);
+  obj["minFree"] = heap_caps_get_minimum_free_size(caps);
+  return obj;
+}
+
+// Byte counts; the minimums are since boot.
+std::string memoryJson() {
+  tao::json::value obj;
+  obj["uptimeS"] = pdTICKS_TO_MS(xTaskGetTickCount()) / 1000;
+  obj["internal"] = heapJson(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  obj["dma"] = heapJson(MALLOC_CAP_DMA);
+  obj["psram"] = heapJson(MALLOC_CAP_SPIRAM);
+#if configUSE_TRACE_FACILITY
+  // Fills nothing if a task started since the count overflows the array.
+  std::vector<TaskStatus_t> tasks(uxTaskGetNumberOfTasks() + 4);
+  tasks.resize(uxTaskGetSystemState(tasks.data(), tasks.size(), nullptr));
+  tao::json::value list = tao::json::empty_array;
+  for (const auto& t : tasks) {
+    tao::json::value task;
+    task["name"] = t.pcTaskName;
+    task["minStackFree"] = t.usStackHighWaterMark;
+    task["stackInPsram"] =
+        esp_ptr_external_ram(xTaskGetStackStart(t.xHandle));
+    list.push_back(std::move(task));
+  }
+  obj["tasks"] = std::move(list);
+#endif
+  return tao::json::to_string(obj);
+}
+#endif
 }  // namespace
 
 ControlServer::ControlServer(ControlSettings& settings)
@@ -122,6 +163,21 @@ void ControlServer::registerRoutes() {
         (void)response->writeResponseWithBody(
             501, {{"Content-Type", "application/json"}},
             R"({"error":"restart not supported on this target"})");
+#endif
+      });
+
+  httpServer_.registerGet(
+      "/api/memory",
+      [](const std::unique_ptr<bell::http::Reader>& /*request*/,
+        const std::unique_ptr<bell::http::Writer>& response,
+        const std::unordered_map<std::string, std::string>& /*params*/) {
+#ifdef ESP_PLATFORM
+        (void)response->writeResponseWithBody(
+            200, {{"Content-Type", "application/json"}}, memoryJson());
+#else
+        (void)response->writeResponseWithBody(
+            501, {{"Content-Type", "application/json"}},
+            R"({"error":"memory report not supported on this target"})");
 #endif
       });
 
