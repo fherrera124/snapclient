@@ -61,4 +61,13 @@ bool DacControlAlloBoss::setVolume(float gain) {
   return true;
 }
 
+bool DacControlAlloBoss::setEq(
+    const std::vector<bell::dsp::BiquadParameters>& stages) {
+#if CONFIG_SNAPCLIENT_ALLO_BOSS_SLAVE
+  return stages.empty();
+#else
+  return boss_.setEq(stages);
+#endif
+}
+
 }  // namespace snapclient

@@ -145,6 +145,14 @@ void testCrossoverNeedsNoHeadroom() {
   CHECK(peak(out, 1) < peak(in, 1) * 65536 / 10);
 }
 
+void testOnlyBiampSplitsTheChannels() {
+  const auto boost = dspFlowStages(DspFlow::BassBoost, {100, 6, 0, 0});
+  CHECK(boost.linked && boost.left.size() == 1 && boost.right.size() == 1);
+  CHECK(dspFlowStages(DspFlow::EQBassTreble, {100, 3, 8000, 3}).linked);
+  CHECK(dspFlowStages(DspFlow::Stereo, {}).left.empty());
+  CHECK(!dspFlowStages(DspFlow::Biamp, {500, 0, 500, 0}).linked);
+}
+
 }  // namespace
 }  // namespace snapclient
 
@@ -156,6 +164,7 @@ int main() {
   snapclient::testFullScaleBoostDoesNotClip();
   snapclient::testHeadroomLowersTheRest();
   snapclient::testCrossoverNeedsNoHeadroom();
+  snapclient::testOnlyBiampSplitsTheChannels();
   if (gFailures == 0) {
     std::printf("dsp_processor_test: all passed\n");
   }

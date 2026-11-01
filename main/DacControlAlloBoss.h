@@ -18,6 +18,8 @@ class DacControlAlloBoss : public DacControl {
   esp_err_t start(i2s_chan_handle_t tx, uint32_t sampleRate) override;
   void setMuted(bool muted) override;
   bool setVolume(float gain) override;
+  bool setEq(
+      const std::vector<bell::dsp::BiquadParameters>& stages) override;
 
  private:
   const char* LOG_TAG = "DacControlAlloBoss";

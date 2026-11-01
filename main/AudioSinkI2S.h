@@ -43,6 +43,10 @@ class AudioSinkI2S : public snapclient::AudioSink {
 
   void setMuted(bool muted) override;
   bool setVolume(float gain) override { return dac_.setVolume(gain); }
+  bool setEq(
+      const std::vector<bell::dsp::BiquadParameters>& stages) override {
+    return dac_.setEq(stages);
+  }
 
   size_t preload(const std::byte* pcm, size_t len) override;
   void disable() override;

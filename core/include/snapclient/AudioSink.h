@@ -2,6 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
+
+#include <bell/dsp/BiquadParameters.h>
 
 namespace snapclient {
 
@@ -23,6 +26,12 @@ class AudioSink {
   // Linear gain in [0, 1]. True when the output applies it itself, so the
   // samples must reach it at full scale.
   virtual bool setVolume(float /*gain*/) { return false; }
+  // Filters both channels with stages. True when the output applies them
+  // itself, so the samples must reach it unfiltered; false leaves it flat.
+  virtual bool setEq(
+      const std::vector<bell::dsp::BiquadParameters>& /*stages*/) {
+    return false;
+  }
 
   // Non-blocking, best-effort: pushes as much of pcm[0..len) into the
   // output buffer as currently fits, returning bytes actually accepted

@@ -26,6 +26,15 @@ struct DspFilterParams {
 // it never rises above unity.
 float biquadPeakGainDb(std::vector<bell::dsp::BiquadParameters> stages);
 
+struct DspStages {
+  std::vector<bell::dsp::BiquadParameters> left;
+  std::vector<bell::dsp::BiquadParameters> right;
+  // Both channels get the same stages.
+  bool linked = true;
+};
+
+DspStages dspFlowStages(DspFlow flow, const DspFilterParams& params);
+
 // Two-channel interleaved PCM, S16 in and S32 out.
 class DspProcessor {
  public:

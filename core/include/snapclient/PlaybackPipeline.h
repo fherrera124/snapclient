@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -68,6 +69,9 @@ class PlaybackPipeline {
 
   int64_t minLockLeadUs() const;
 
+  // Gives the sink the flow's filters if it can run them, dsp_ otherwise.
+  void routeEq();
+
   // Resizes queue_ to approximately bufferMs_ worth of chunks - a
   // capacity close to that target leaves little headroom for ordinary
   // network jitter as bufferMs_ grows. No-op until both bufferMs_ and
@@ -95,6 +99,10 @@ class PlaybackPipeline {
 
   SyncEngine sync_;
   DspProcessor dsp_;
+  // Guards the two below and routeEq().
+  std::mutex dspMutex_;
+  DspFlow dspFlow_ = DspFlow::Stereo;
+  DspFilterParams dspParams_;
   AudioSink& audioSink_;
   PrecisionWaiter& waiter_;
   BoundedQueue<QueuedChunk> queue_;

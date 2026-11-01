@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
+
+#include <bell/dsp/BiquadParameters.h>
 
 #include "driver/i2s_std.h"
 #include "esp_err.h"
@@ -20,6 +23,11 @@ class DacControl {
   virtual void setMuted(bool muted) = 0;
   // Same contract as AudioSink::setVolume().
   virtual bool setVolume(float /*gain*/) { return false; }
+  // Same contract as AudioSink::setEq().
+  virtual bool setEq(
+      const std::vector<bell::dsp::BiquadParameters>& /*stages*/) {
+    return false;
+  }
 };
 
 }  // namespace snapclient

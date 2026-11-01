@@ -1,5 +1,7 @@
 #include "snapclient/pcm5122/Pcm5122Driver.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace snapclient {
@@ -31,6 +33,7 @@ constexpr uint8_t kRegVolumeLeft = 61;
 constexpr uint8_t kRegVolumeRight = 62;
 constexpr uint8_t kRegI2s1 = 40;
 constexpr uint8_t kRegI2s2 = 41;
+constexpr uint8_t kRegDspProgram = 43;
 constexpr uint8_t kRegGpioOutput1 = 80;
 constexpr uint8_t kRegGpioControl1 = 86;
 constexpr uint8_t kRegRateDet4 = 94;
@@ -52,6 +55,14 @@ constexpr uint8_t kErrorDetectNoSck = 0x08;
 constexpr uint8_t kI2s32Bit = 0x03;
 constexpr uint8_t kVolume0Db = 0x30;
 constexpr uint8_t kVolumeMute = 0xFF;
+constexpr uint8_t kAutoIncrement = 0x80;
+
+// 30 coefficients per page from page 44, each in four registers from
+// register 8, the last one unused.
+constexpr uint8_t kFirstCoefficientPage = 44;
+constexpr uint8_t kFirstCoefficientReg = 8;
+constexpr size_t kCoefficientsPerPage = 30;
+constexpr size_t kBytesPerCoefficient = 4;
 
 constexpr uint32_t kDspMaxHz = 50'000'000;
 constexpr uint32_t kDacMaxHz = 6'144'000;
@@ -200,6 +211,39 @@ bool Pcm5122Driver::configureMaster(const Pcm5122MasterDividers& d) {
          // Halt and resume, so the new dividers take effect together.
          writeByte(kRegSynchronize, 1) &&
          writeByte(kRegSynchronize, 0);
+}
+
+bool Pcm5122Driver::selectProgram(uint8_t program) {
+  return writeByte(kRegDspProgram, program);
+}
+
+bool Pcm5122Driver::writeCoefficients(uint8_t first, const uint32_t* words,
+                                      size_t count) {
+  bool ok = true;
+  for (size_t i = 0; ok && i < count;) {
+    const size_t index = first + i;
+    const size_t slot = index % kCoefficientsPerPage;
+    const size_t n = std::min(count - i, kCoefficientsPerPage - slot);
+    std::array<uint8_t, 1 + kCoefficientsPerPage * kBytesPerCoefficient>
+        buf{};
+    buf[0] = static_cast<uint8_t>(kFirstCoefficientReg +
+                                  slot * kBytesPerCoefficient) |
+             kAutoIncrement;
+    for (size_t j = 0; j < n; j++) {
+      const uint32_t word = words[i + j];
+      uint8_t* out = &buf[1 + j * kBytesPerCoefficient];
+      out[0] = static_cast<uint8_t>(word >> 16);
+      out[1] = static_cast<uint8_t>(word >> 8);
+      out[2] = static_cast<uint8_t>(word);
+    }
+    ok = writeByte(kRegPage, static_cast<uint8_t>(
+                                 kFirstCoefficientPage +
+                                 index / kCoefficientsPerPage)) &&
+         bus_.write(deviceAddr_, buf.data(),
+                    1 + n * kBytesPerCoefficient);
+    i += n;
+  }
+  return writeByte(kRegPage, 0) && ok;
 }
 
 bool Pcm5122Driver::configureSlave() {

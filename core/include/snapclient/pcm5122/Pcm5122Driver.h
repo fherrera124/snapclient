@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -29,7 +30,8 @@ std::optional<Pcm5122MasterDividers> pcm5122MasterDividers(
 // 0x30 (0 dB) down, 0xFF (mute) at or below -103.5 dB. Above 1 is 0 dB.
 uint8_t pcm5122VolumeCode(float gain);
 
-// Page 0 registers only; nothing here needs another page.
+// Not thread-safe: writeCoefficients() switches pages, so nothing else may
+// write while it runs.
 class Pcm5122Driver {
  public:
   explicit Pcm5122Driver(I2cBus& bus, uint8_t deviceAddr = 0x4D);
@@ -52,6 +54,13 @@ class Pcm5122Driver {
 
   // I2S format, 32-bit words, BCK and LRCK in, PLL fed from BCK.
   bool configureSlave();
+
+  // Only in standby.
+  bool selectProgram(uint8_t program);
+
+  // 24-bit words into the DSP's coefficient RAM, from coefficient first on.
+  // Only in standby.
+  bool writeCoefficients(uint8_t first, const uint32_t* words, size_t count);
 
  private:
   I2cBus& bus_;

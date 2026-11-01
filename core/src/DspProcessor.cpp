@@ -84,6 +84,47 @@ float biquadPeakGainDb(std::vector<BiquadParameters> stages) {
   return 20.0f * std::log10(peak);
 }
 
+DspStages dspFlowStages(DspFlow flow, const DspFilterParams& params) {
+  DspStages stages;
+  switch (flow) {
+    case DspFlow::Stereo:
+      break;
+
+    case DspFlow::EQBassTreble:
+      stages.left = {BiquadParameters(BiquadParameters::Type::Lowshelf,
+                                      params.freqPrimaryHz, kShelfQ,
+                                      params.gainPrimaryDb, std::nullopt,
+                                      std::nullopt),
+                     BiquadParameters(BiquadParameters::Type::Highshelf,
+                                      params.freqTertiaryHz, kShelfQ,
+                                      params.gainTertiaryDb, std::nullopt,
+                                      std::nullopt)};
+      stages.right = stages.left;
+      break;
+
+    case DspFlow::BassBoost:
+      stages.left = {BiquadParameters(BiquadParameters::Type::Lowshelf,
+                                      params.freqPrimaryHz, kShelfQ,
+                                      params.gainPrimaryDb, std::nullopt,
+                                      std::nullopt)};
+      stages.right = stages.left;
+      break;
+
+    case DspFlow::Biamp:
+      stages.left = {BiquadParameters(BiquadParameters::Type::Lowpass,
+                                      params.freqPrimaryHz, kShelfQ,
+                                      std::nullopt, std::nullopt,
+                                      std::nullopt)};
+      stages.right = {BiquadParameters(BiquadParameters::Type::Highpass,
+                                       params.freqTertiaryHz, kShelfQ,
+                                       std::nullopt, std::nullopt,
+                                       std::nullopt)};
+      stages.linked = false;
+      break;
+  }
+  return stages;
+}
+
 DspProcessor::DspProcessor() {
   rebuildPipeline();
 }
@@ -115,43 +156,10 @@ void DspProcessor::setVolume(float volume) {
 }
 
 void DspProcessor::rebuildPipeline() {
-  const auto& params = flowParams[static_cast<size_t>(activeFlow)];
-  std::vector<BiquadParameters> left;
-  std::vector<BiquadParameters> right;
-
-  switch (activeFlow) {
-    case DspFlow::Stereo:
-      break;
-
-    case DspFlow::EQBassTreble:
-      left = {BiquadParameters(BiquadParameters::Type::Lowshelf,
-                               params.freqPrimaryHz, kShelfQ,
-                               params.gainPrimaryDb, std::nullopt,
-                               std::nullopt),
-              BiquadParameters(BiquadParameters::Type::Highshelf,
-                               params.freqTertiaryHz, kShelfQ,
-                               params.gainTertiaryDb, std::nullopt,
-                               std::nullopt)};
-      right = left;
-      break;
-
-    case DspFlow::BassBoost:
-      left = {BiquadParameters(BiquadParameters::Type::Lowshelf,
-                               params.freqPrimaryHz, kShelfQ,
-                               params.gainPrimaryDb, std::nullopt,
-                               std::nullopt)};
-      right = left;
-      break;
-
-    case DspFlow::Biamp:
-      left = {BiquadParameters(BiquadParameters::Type::Lowpass,
-                               params.freqPrimaryHz, kShelfQ, std::nullopt,
-                               std::nullopt, std::nullopt)};
-      right = {BiquadParameters(BiquadParameters::Type::Highpass,
-                                params.freqTertiaryHz, kShelfQ, std::nullopt,
-                                std::nullopt, std::nullopt)};
-      break;
-  }
+  const DspStages stages =
+      dspFlowStages(activeFlow, flowParams[static_cast<size_t>(activeFlow)]);
+  const auto& left = stages.left;
+  const auto& right = stages.right;
 
   auto pipeline = std::make_shared<TransformPipeline>();
   // Attenuate by the boost before it is applied, so it cannot clip.

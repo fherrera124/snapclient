@@ -72,8 +72,26 @@ PlaybackPipeline::PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
 
 void PlaybackPipeline::applyDspSettings(DspFlow flow,
                                         const DspFilterParams& params) {
-  dsp_.switchFlow(flow);
-  dsp_.setParams(flow, params);
+  {
+    std::lock_guard<std::mutex> lock(dspMutex_);
+    dspFlow_ = flow;
+    dspParams_ = params;
+  }
+  routeEq();
+}
+
+void PlaybackPipeline::routeEq() {
+  std::lock_guard<std::mutex> lock(dspMutex_);
+  const DspStages stages = dspFlowStages(dspFlow_, dspParams_);
+  const bool inSink = stages.linked && audioSink_.setEq(stages.left);
+  if (!stages.linked) {
+    audioSink_.setEq({});
+  }
+  if (!stages.left.empty()) {
+    BELL_LOG(info, logTag_, "EQ runs in {}", inSink ? "the DAC" : "software");
+  }
+  dsp_.setParams(dspFlow_, dspParams_);
+  dsp_.switchFlow(inSink ? DspFlow::Stereo : dspFlow_);
 }
 
 void PlaybackPipeline::setDownmixMono(bool downmix) {
@@ -116,6 +134,7 @@ void PlaybackPipeline::onCodecReady(Codec codec,
   appliedChunkFrames_.store(expectedSamplesPerChunk,
                             std::memory_order_relaxed);
   audioSink_.configure(fmt.getSampleRateValue(), expectedSamplesPerChunk);
+  routeEq();
   // Reserved once so prepareForOutput()'s resize() never allocates on the
   // audio path; +8 covers frameAdjustment's per-chunk swing.
   scratchResampled_.reserve((expectedSamplesPerChunk + 8) * 2);
@@ -328,6 +347,7 @@ void PlaybackPipeline::consumeOnce() {
   if (samplesPerChunk != appliedChunkFrames_.load(std::memory_order_relaxed)) {
     audioSink_.configure(sampleRateHz_.load(std::memory_order_relaxed),
                          samplesPerChunk);
+    routeEq();
     applyQueueCapacity();
     appliedChunkFrames_.store(samplesPerChunk, std::memory_order_relaxed);
   }
