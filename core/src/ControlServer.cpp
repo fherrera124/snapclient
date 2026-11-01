@@ -68,7 +68,9 @@ std::string memoryJson() {
 }  // namespace
 
 ControlServer::ControlServer(ControlSettings& settings)
-    : settings_(settings) {
+    : settings_(settings),
+      httpServer_(/*maxConnections=*/5, /*espStackOnPsram=*/false,
+                  /*stackSize=*/6 * 1024) {
   registerRoutes();
 }
 

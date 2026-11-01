@@ -31,7 +31,7 @@ bool ImprovWifi::isProvisioning() {
 }
 
 ImprovWifi::ImprovWifi()
-    : bell::Task("improv_wifi", 8 * 1024, /*espPriority=*/4,
+    : bell::Task("improv_wifi", 6 * 1024, /*espPriority=*/4,
                 bell::TaskCore::CoreAny, /*espStackOnPsram=*/false) {
 #if CONFIG_ESP_CONSOLE_UART_DEFAULT || CONFIG_ESP_CONSOLE_UART_CUSTOM
   uart_driver_install(static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM),

@@ -52,7 +52,7 @@ std::optional<bell::audio::SampleRate> toSampleRate(uint32_t hz) {
 }  // namespace
 
 SnapcastClient::SnapcastClient(Config config)
-    : bell::Task("snapcast_client", 8 * 1024, /*espPriority=*/4,
+    : bell::Task("snapcast_client", 6 * 1024, /*espPriority=*/4,
                 bell::TaskCore::CoreAny, /*espStackOnPsram=*/false),
       config_(std::move(config)) {
   startTask();

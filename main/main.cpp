@@ -333,5 +333,4 @@ extern "C" void app_main(void) {
   };
 
   static auto task = std::make_unique<SnapclientTask>();
-  vTaskSuspend(NULL);
 }
