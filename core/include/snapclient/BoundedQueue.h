@@ -1,69 +1,62 @@
 #pragma once
 
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
-#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <utility>
 
-#include <bell/utils/Semaphore.h>
-
 namespace snapclient {
 
-// Thread-safe bounded FIFO. One mutex plus two semaphores (items
-// available, free slots) guard a std::deque capped at a capacity that's
-// adjustable at runtime via setCapacity() - every public method is a
-// self-contained critical section that never calls into another
-// BoundedQueue, so instances never need lock-ordering discipline against
-// each other.
+// Thread-safe bounded FIFO whose capacity can change at runtime. Every
+// public method is a self-contained critical section that never calls into
+// another BoundedQueue, so instances never need lock-ordering discipline
+// against each other.
 template <typename T>
 class BoundedQueue {
  public:
-  explicit BoundedQueue(size_t capacity)
-      : capacity_(capacity), freeSlots_(static_cast<uint32_t>(capacity)) {}
+  explicit BoundedQueue(size_t capacity) : capacity_(capacity) {}
 
   // Never blocks. Returns false (item untouched) if already at capacity -
   // for a producer that must never stall (e.g. a network read thread).
   bool tryPush(T item) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (deque_.size() >= capacity_) {
-      return false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (deque_.size() >= capacity_) {
+        return false;
+      }
+      deque_.push_back(std::move(item));
     }
-    pushLocked(std::move(item));
+    notEmpty_.notify_one();
     return true;
   }
 
   // Blocks until a slot is free - deliberate backpressure for a producer
   // that should pause when the consumer hasn't caught up.
   void push(T item) {
-    while (!freeSlots_.take(10)) {
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      notFull_.wait(lock, [this] { return deque_.size() < capacity_; });
+      deque_.push_back(std::move(item));
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    pushLocked(std::move(item));
+    notEmpty_.notify_one();
   }
 
   // Pops the front item into out and returns true, or waits up to
-  // timeoutMs for one to arrive and returns false on timeout.
+  // timeoutMs for one to arrive and returns false on timeout. 0 never
+  // waits.
   bool tryPop(T& out, int timeoutMs) {
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (!deque_.empty()) {
-        out = std::move(deque_.front());
-        deque_.pop_front();
-        freeSlots_.give();
-        return true;
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (!notEmpty_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                              [this] { return !deque_.empty(); })) {
+        return false;
       }
+      out = std::move(deque_.front());
+      deque_.pop_front();
     }
-    if (!itemAvailable_.take(timeoutMs)) {
-      return false;
-    }
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (deque_.empty()) {
-      return false;
-    }
-    out = std::move(deque_.front());
-    deque_.pop_front();
-    freeSlots_.give();
+    notFull_.notify_one();
     return true;
   }
 
@@ -77,42 +70,28 @@ class BoundedQueue {
     return capacity_;
   }
 
-  // Only meant for a tryPush()/tryPop() producer/consumer pair: freeSlots_
-  // only grows here, never shrinks, so a push()-blocking producer could
-  // still overfill briefly right after a decrease, until enough items
-  // drain to bring the semaphore back in line.
   void setCapacity(size_t newCapacity) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (newCapacity > capacity_) {
-      for (size_t i = capacity_; i < newCapacity; i++) {
-        freeSlots_.give();
-      }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      capacity_ = newCapacity;
     }
-    capacity_ = newCapacity;
+    notFull_.notify_all();
   }
 
   void clear() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (size_t i = 0; i < deque_.size(); i++) {
-      freeSlots_.give();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      deque_.clear();
     }
-    deque_.clear();
+    notFull_.notify_all();
   }
 
  private:
-  void pushLocked(T item) {
-    const bool wasEmpty = deque_.empty();
-    deque_.push_back(std::move(item));
-    if (wasEmpty) {
-      itemAvailable_.give();
-    }
-  }
-
   size_t capacity_;
   std::mutex mutex_;
+  std::condition_variable notEmpty_;
+  std::condition_variable notFull_;
   std::deque<T> deque_;
-  bell::Semaphore itemAvailable_;
-  bell::Semaphore freeSlots_;
 };
 
 }  // namespace snapclient
