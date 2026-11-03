@@ -1,11 +1,14 @@
 #include "GptimerWaiter.h"
 
+#include <algorithm>
+
 #include <bell/Logger.h>
 
 namespace snapclient {
 
 namespace {
 const char* kLogTag = "GptimerWaiter";
+constexpr int64_t kAlarmSlackMs = 100;
 }  // namespace
 
 GptimerWaiter::GptimerWaiter() : taskHandle_(xTaskGetCurrentTaskHandle()) {
@@ -46,6 +49,8 @@ void GptimerWaiter::arm(int64_t waitUs) {
     return;
   }
 
+  xTaskNotifyStateClear(nullptr);
+  armedUs_ = waitUs;
   ESP_ERROR_CHECK(gptimer_enable(timer_));
   ESP_ERROR_CHECK(gptimer_set_raw_count(timer_, 0));
   gptimer_alarm_config_t alarmConfig = {
@@ -62,7 +67,16 @@ void GptimerWaiter::block() {
   if (!pendingAlarm_) {
     return;
   }
-  xTaskNotifyWait(0, 0, nullptr, portMAX_DELAY);
+  const int64_t timeoutTicks =
+      (armedUs_ / 1000 + kAlarmSlackMs) * configTICK_RATE_HZ / 1000 + 1;
+  if (xTaskNotifyWait(0, 0, nullptr,
+                      static_cast<TickType_t>(std::min<int64_t>(
+                          timeoutTicks, portMAX_DELAY - 1))) != pdTRUE) {
+    uint64_t countUs = 0;
+    gptimer_get_raw_count(timer_, &countUs);
+    BELL_LOG(error, kLogTag, "alarm did not fire: armed {}us, timer at {}us",
+             armedUs_, countUs);
+  }
   ESP_ERROR_CHECK(gptimer_stop(timer_));
   ESP_ERROR_CHECK(gptimer_disable(timer_));
   pendingAlarm_ = false;

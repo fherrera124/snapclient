@@ -15,7 +15,8 @@ class PrecisionWaiter {
   // Starts a one-shot alarm to fire in waitUs microseconds. Non-blocking.
   // waitUs <= 0 arms nothing - the next block() call returns immediately.
   virtual void arm(int64_t waitUs) = 0;
-  // Blocks until the most recently armed alarm fires.
+  // Blocks until the most recently armed alarm fires, or a little past
+  // when it should have.
   virtual void block() = 0;
 };
 

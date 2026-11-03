@@ -32,6 +32,7 @@ class GptimerWaiter : public PrecisionWaiter {
   // False when arm() was a no-op (waitUs<=0 or no timer) - guards block()
   // against waiting forever on an alarm that was never started.
   bool pendingAlarm_ = false;
+  int64_t armedUs_ = 0;
 };
 
 }  // namespace snapclient
