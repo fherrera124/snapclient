@@ -400,8 +400,7 @@ void PlaybackPipeline::consumeOnce() {
   const int32_t dacLatencyUs = static_cast<int32_t>(dacFixedLatencyMs_) * 1000;
 
   auto result = sync_.evaluate(itemServerTimeUs, nowUs(), dacLatencyUs,
-                               pcmLen / kBytesPerFrame, minLockLeadUs(),
-                               audioSink_.clockDriftUs());
+                               minLockLeadUs(), audioSink_.clockDriftUs());
 
   if (result.decision == PlayDecision::WaitMore) {
     lockOntoChunk(std::move(item), result.waitUs);
@@ -416,18 +415,17 @@ void PlaybackPipeline::consumeOnce() {
     // Tell SyncEngine the actual frames just written
     sync_.onFramesWritten(targetFrames);
   } else {
-    // DropLate. chunksToSkip more queued chunks are already stale too -
-    // drop them in one pass; 0 when the hard-resync threshold fired.
-    // The count comes out of both queues: pcmQueue_ holds only what decode
-    // has run ahead by, and the rest of the backlog is in queue_.
-    int remaining = result.chunksToSkip;
+    // DropLate. Also drop every queued chunk evaluate() found stale, from
+    // both queues.
+    const int64_t staleUpTo = result.staleUpToServerTimeUs;
+    auto isStale = [staleUpTo](const auto& chunk) {
+      return chunk.serverTimeUs <= staleUpTo;
+    };
     DecodedChunk decodedDiscard;
-    while (remaining > 0 && pcmQueue_.tryPop(decodedDiscard, 0)) {
-      --remaining;
+    while (pcmQueue_.tryPopIf(decodedDiscard, isStale)) {
     }
     QueuedChunk encodedDiscard;
-    while (remaining > 0 && queue_.tryPop(encodedDiscard, 0)) {
-      --remaining;
+    while (queue_.tryPopIf(encodedDiscard, isStale)) {
     }
     std::this_thread::yield();
   }

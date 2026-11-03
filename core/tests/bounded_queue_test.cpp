@@ -86,6 +86,44 @@ void testEmptyQueueWaitsTheFullTimeout() {
   }
 }
 
+void testTryPopIfStopsAtTheFirstItemThatFails() {
+  BoundedQueue<int> queue(8);
+  for (int value : {1, 2, 3, 10, 4}) {
+    CHECK(queue.tryPush(value));
+  }
+  auto small = [](int value) { return value < 5; };
+  int out = 0;
+  int popped = 0;
+  while (queue.tryPopIf(out, small)) {
+    ++popped;
+  }
+  CHECK(popped == 3);
+  CHECK(queue.size() == 2);
+  CHECK(queue.tryPop(out, 0));
+  CHECK(out == 10);
+}
+
+void testTryPopIfNeverWaits() {
+  BoundedQueue<int> queue(4);
+  int out = 0;
+  const auto start = steady_clock::now();
+  CHECK(!queue.tryPopIf(out, [](int) { return true; }));
+  CHECK(msSince(start) < 50);
+}
+
+void testTryPopIfReleasesAWaitingPush() {
+  BoundedQueue<int> queue(1);
+  queue.push(1);
+  std::thread producer([&] { queue.push(2); });
+  std::this_thread::sleep_for(milliseconds(50));
+
+  int out = 0;
+  CHECK(queue.tryPopIf(out, [](int) { return true; }));
+  CHECK(out == 1);
+  producer.join();
+  CHECK(queue.size() == 1);
+}
+
 void testTryPushRefusesWhenFull() {
   BoundedQueue<int> queue(2);
   CHECK(queue.tryPush(1));
@@ -149,6 +187,9 @@ int main() {
   snapclient::testZeroTimeoutNeverWaits();
   snapclient::testEveryWaiterGetsAnItem();
   snapclient::testEmptyQueueWaitsTheFullTimeout();
+  snapclient::testTryPopIfStopsAtTheFirstItemThatFails();
+  snapclient::testTryPopIfNeverWaits();
+  snapclient::testTryPopIfReleasesAWaitingPush();
   snapclient::testTryPushRefusesWhenFull();
   snapclient::testPushWaitsForRoom();
   snapclient::testRaisingCapacityReleasesAWaitingPush();

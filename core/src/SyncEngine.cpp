@@ -1,6 +1,5 @@
 #include "snapclient/SyncEngine.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
@@ -48,8 +47,7 @@ void SyncEngine::reset() {
 }
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
-                                int32_t dacLatencyUs, size_t chunkFrames,
-                                int64_t minLockLeadUs,
+                                int32_t dacLatencyUs, int64_t minLockLeadUs,
                                 int64_t outputDriftUs) {
   const int64_t diffToServer = timeFilter_.offsetAt(nowUs);
   const int64_t serverNowUs = nowUs + diffToServer;
@@ -62,20 +60,16 @@ SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
       return {PlayDecision::WaitMore, -age, 0, false};
     }
     // lockWithPreloadedFrames() is the only way playing_ becomes true, so
-    // there is no grace window - skip, in one pass, to a chunk with enough
-    // lead.
-    const int64_t chunkDurationUs =
-        static_cast<int64_t>(std::max<size_t>(chunkFrames, 1)) * 1'000'000 /
-        sampleRate_;
-    const int chunksToSkip = static_cast<int>(
-        (age + minLockLeadUs + chunkDurationUs - 1) / chunkDurationUs);
+    // there is no grace window - every queued chunk without enough lead is
+    // stale too.
+    const int64_t staleSpanUs = age + minLockLeadUs;
     BELL_LOG(warn, kLogTag,
              "initial sync: age={} diffToServer={} bufferUs={} "
-             "dacLatencyUs={} skipping {} more",
-             age, diffToServer, bufferUs, dacLatencyUs, chunksToSkip);
+             "dacLatencyUs={} dropping queued chunks up to {}us newer",
+             age, diffToServer, bufferUs, dacLatencyUs, staleSpanUs);
     SyncResult result;
     result.decision = PlayDecision::DropLate;
-    result.chunksToSkip = chunksToSkip;
+    result.staleUpToServerTimeUs = chunkServerTimeUs + staleSpanUs;
     return result;
   }
 

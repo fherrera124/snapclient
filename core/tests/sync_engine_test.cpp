@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 
 #include "snapclient/SyncEngine.h"
 
@@ -51,7 +52,7 @@ class SteadyStateDriver {
     const int64_t actual = actualPlayLocalUs();
     const int64_t chunkServerTimeUs = actual - ageUs - bufferUs_;
     auto result = engine_.evaluate(chunkServerTimeUs, actual,
-                                   /*dacLatencyUs=*/0, kFramesPerTestChunk,
+                                   /*dacLatencyUs=*/0,
                                    /*minLockLeadUs=*/0, outputDriftUs);
     engine_.onFramesWritten(kFramesPerTestChunk);
     samplesWritten_ += kFramesPerTestChunk;
@@ -87,6 +88,8 @@ void test_hard_resync_fires_past_threshold() {
   }
   CHECK(result.decision == PlayDecision::DropLate);
   CHECK(result.hardResync);
+  CHECK(result.staleUpToServerTimeUs ==
+        std::numeric_limits<int64_t>::min());
   CHECK(!driver.engine().isPlaying());
 }
 
@@ -167,7 +170,7 @@ void test_lock_with_preloaded_frames_seeds_virtual_clock() {
   const int64_t chunkServerTimeUs = evalNowUs - kBufferUs;
 
   auto result = engine.evaluate(chunkServerTimeUs, evalNowUs,
-                                /*dacLatencyUs=*/0, kFramesPerTestChunk,
+                                /*dacLatencyUs=*/0,
                                 /*minLockLeadUs=*/0);
   CHECK(result.decision == PlayDecision::Play);
   CHECK(result.ageUs == 0);
@@ -187,41 +190,49 @@ void test_initial_sync_drops_a_due_chunk_instead_of_playing_it() {
 
   // age == 0 exactly: right on time, not early - still must not play.
   auto result = engine.evaluate(kNowUs - kBufferUs, kNowUs,
-                                /*dacLatencyUs=*/0, kFramesPerTestChunk,
+                                /*dacLatencyUs=*/0,
                                 /*minLockLeadUs=*/0);
   CHECK(result.decision == PlayDecision::DropLate);
   CHECK(!engine.isPlaying());
 }
 
-// chunksToSkip must clear minLockLeadUs in one pass, and the caller has to
-// honour all of it: a skip that falls short leaves the next chunk late too,
-// and initial sync never reaches a lockable one.
-void test_initial_sync_skip_reaches_the_lock_window() {
+// The cutoff must match the lock window - the chunk stamped on it still
+// cannot lock, the next microsecond can - and depend only on the clock, not
+// on which stale chunk was evaluated.
+void test_initial_sync_cutoff_matches_the_lock_window() {
   constexpr uint32_t kSampleRate = 48000;
   constexpr int32_t kBufferMs = 700;
   constexpr int64_t kBufferUs = int64_t{kBufferMs} * 1000;
   constexpr int64_t kNowUs = 10'000'000;
   constexpr int64_t kMinLockLeadUs = 72'000;
-  constexpr int64_t kChunkDurationUs =
-      kFramesPerTestChunk * 1'000'000 / kSampleRate;
 
   // Spanning what a backlogged client actually reports.
-  for (int64_t lateUs : {int64_t{1'000}, int64_t{100'000}, int64_t{190'000}}) {
-    SyncEngine engine;
-    engine.onSettingsChanged(kBufferMs, kSampleRate);
+  for (int64_t lateUs :
+       {int64_t{1'000}, int64_t{100'000}, int64_t{3'500'000}}) {
+    for (int32_t dacLatencyUs : {0, -40'000}) {
+      SyncEngine engine;
+      engine.onSettingsChanged(kBufferMs, kSampleRate);
 
-    int64_t chunkServerTimeUs = kNowUs - kBufferUs - lateUs;
-    auto result = engine.evaluate(chunkServerTimeUs, kNowUs,
-                                  /*dacLatencyUs=*/0, kFramesPerTestChunk,
-                                  kMinLockLeadUs);
-    CHECK(result.decision == PlayDecision::DropLate);
-    CHECK(result.chunksToSkip > 0);
+      const int64_t chunkServerTimeUs = kNowUs - kBufferUs - lateUs;
+      auto result = engine.evaluate(chunkServerTimeUs, kNowUs, dacLatencyUs,
+                                    kMinLockLeadUs);
+      CHECK(result.decision == PlayDecision::DropLate);
+      const int64_t staleUpTo = result.staleUpToServerTimeUs;
+      CHECK(staleUpTo >= chunkServerTimeUs);
 
-    // The chunk that many further along, evaluated at the same instant.
-    chunkServerTimeUs += result.chunksToSkip * kChunkDurationUs;
-    result = engine.evaluate(chunkServerTimeUs, kNowUs, /*dacLatencyUs=*/0,
-                             kFramesPerTestChunk, kMinLockLeadUs);
-    CHECK(result.decision == PlayDecision::WaitMore);
+      result = engine.evaluate(chunkServerTimeUs - 50'000, kNowUs,
+                               dacLatencyUs, kMinLockLeadUs);
+      CHECK(result.decision == PlayDecision::DropLate);
+      CHECK(result.staleUpToServerTimeUs == staleUpTo);
+
+      result = engine.evaluate(staleUpTo, kNowUs, dacLatencyUs,
+                               kMinLockLeadUs);
+      CHECK(result.decision == PlayDecision::DropLate);
+
+      result = engine.evaluate(staleUpTo + 1, kNowUs, dacLatencyUs,
+                               kMinLockLeadUs);
+      CHECK(result.decision == PlayDecision::WaitMore);
+    }
   }
 }
 
@@ -236,7 +247,7 @@ int main() {
   snapclient::test_steady_state_gate_requires_agreement();
   snapclient::test_lock_with_preloaded_frames_seeds_virtual_clock();
   snapclient::test_initial_sync_drops_a_due_chunk_instead_of_playing_it();
-  snapclient::test_initial_sync_skip_reaches_the_lock_window();
+  snapclient::test_initial_sync_cutoff_matches_the_lock_window();
 
   if (gFailures == 0) {
     std::printf("all tests passed\n");

@@ -60,6 +60,22 @@ class BoundedQueue {
     return true;
   }
 
+  // Never waits. Pops the front item into out only if pred(front) is true.
+  // pred runs under the queue's lock.
+  template <typename Pred>
+  bool tryPopIf(T& out, Pred pred) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (deque_.empty() || !pred(deque_.front())) {
+        return false;
+      }
+      out = std::move(deque_.front());
+      deque_.pop_front();
+    }
+    notFull_.notify_one();
+    return true;
+  }
+
   size_t size() {
     std::lock_guard<std::mutex> lock(mutex_);
     return deque_.size();
