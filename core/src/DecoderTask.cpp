@@ -69,16 +69,17 @@ void DecoderTask::runTask() {
       } else {
         pcm = std::move(item.payload);
       }
-      if (pcm) {
-        samplesPerChunkHint_.store(
-            static_cast<uint32_t>(pcm.size() / kBytesPerFrame),
-            std::memory_order_relaxed);
-      }
     }
 
     // Codec may have changed mid-decode - recheck before publishing.
     if (item.codecGen != codecGeneration_.load(std::memory_order_relaxed)) {
       continue;
+    }
+
+    if (pcm) {
+      samplesPerChunkHint_.store(
+          static_cast<uint32_t>(pcm.size() / kBytesPerFrame),
+          std::memory_order_relaxed);
     }
 
     if (!pcm) {

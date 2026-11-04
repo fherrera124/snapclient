@@ -24,8 +24,9 @@ class SnapcastDiscovery {
   void stop();
 
  private:
-  std::unique_ptr<bell::mdns::Browser> browser_;
+  // Outlives browser_, which calls it until destroyed.
   std::function<void(const Found&)> onFound_;
+  std::unique_ptr<bell::mdns::Browser> browser_;
 };
 
 }  // namespace snapclient

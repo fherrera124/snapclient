@@ -116,12 +116,11 @@ void ControlServer::registerRoutes() {
       [](const std::unique_ptr<bell::http::Reader>& /*request*/,
         const std::unique_ptr<bell::http::Writer>& response,
         const std::unordered_map<std::string, std::string>& /*params*/) {
-        // Discovery stops via ~SnapcastDiscovery when this goes out of
-        // scope below - no explicit stop() call needed for a one-shot browse.
-        SnapcastDiscovery discovery;
         std::mutex mutex;
         std::condition_variable cv;
         std::optional<SnapcastDiscovery::Found> found;
+        // Last, so it stops before what its callback uses is destroyed.
+        SnapcastDiscovery discovery;
 
         auto startRes = discovery.start(
             [&](const SnapcastDiscovery::Found& f) {
