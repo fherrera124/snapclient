@@ -1,5 +1,7 @@
 #include "snapclient/Protocol.h"
 
+#include <algorithm>
+
 #include <tao/json.hpp>
 
 namespace snapclient {
@@ -100,7 +102,7 @@ std::optional<ServerSettingsMessage> ServerSettingsMessage::parse(
     return std::nullopt;
   }
   uint32_t jsonLen = readU32LE(payload);
-  if (len < size_t{4} + jsonLen) {
+  if (jsonLen > len - 4) {
     return std::nullopt;
   }
   std::string json(reinterpret_cast<const char*>(payload + 4), jsonLen);
@@ -116,7 +118,8 @@ std::optional<ServerSettingsMessage> ServerSettingsMessage::parse(
   try {
     m.bufferMs = obj.at("bufferMs").as<int32_t>();
     m.latency = obj.at("latency").as<int32_t>();
-    m.volume = obj.at("volume").as<uint32_t>();
+    m.volume = static_cast<uint32_t>(
+        std::clamp<int64_t>(obj.at("volume").as<int64_t>(), 0, 100));
     m.muted = obj.at("muted").as<bool>();
   } catch (const std::exception&) {
     return std::nullopt;
@@ -130,7 +133,7 @@ std::optional<CodecHeaderMessage> CodecHeaderMessage::parse(
     return std::nullopt;
   }
   uint32_t nameLen = readU32LE(payload);
-  if (len < size_t{4} + nameLen + 4) {
+  if (nameLen > len - 4 || len - 4 - nameLen < 4) {
     return std::nullopt;
   }
   std::string name(reinterpret_cast<const char*>(payload + 4), nameLen);
@@ -138,7 +141,7 @@ std::optional<CodecHeaderMessage> CodecHeaderMessage::parse(
   size_t offset = 4 + nameLen;
   uint32_t payloadLen = readU32LE(payload + offset);
   offset += 4;
-  if (len < offset + payloadLen) {
+  if (payloadLen > len - offset) {
     return std::nullopt;
   }
   const std::byte* codecPayload = payload + offset;
