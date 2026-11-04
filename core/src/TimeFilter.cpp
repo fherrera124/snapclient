@@ -5,6 +5,8 @@
 
 namespace snapclient {
 
+TimeFilter::TimeFilter() : TimeFilter(0.01, 0.0, 1.001, 0.75, 100, 2.0) {}
+
 TimeFilter::TimeFilter(double processStdDev, double driftProcessStdDev,
                        double forgetFactor, double adaptiveCutoff,
                        uint8_t minSamples, double driftSignificanceThreshold)

@@ -9,6 +9,8 @@ namespace snapclient {
 // outlier residuals and a significance gate on the drift term.
 class TimeFilter {
  public:
+  // Tuned for Snapcast's TIME round trips.
+  TimeFilter();
   TimeFilter(double processStdDev, double driftProcessStdDev,
              double forgetFactor, double adaptiveCutoff, uint8_t minSamples,
              double driftSignificanceThreshold);

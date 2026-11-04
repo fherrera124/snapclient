@@ -11,10 +11,7 @@ namespace {
 const char* kLogTag = "SyncEngine";
 }  // namespace
 
-SyncEngine::SyncEngine()
-    : timeFilter_(0.01, 0.0, 1.001, 0.75, 100, 2.0),
-      shortMedian_(99),
-      miniMedian_(19) {}
+SyncEngine::SyncEngine() : shortMedian_(99), miniMedian_(19) {}
 
 void SyncEngine::onSettingsChanged(int32_t bufferMs, uint32_t sampleRate) {
   bufferMs_ = bufferMs;
