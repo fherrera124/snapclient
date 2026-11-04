@@ -26,11 +26,18 @@ void SyncEngine::onSettingsChanged(int32_t bufferMs, uint32_t sampleRate) {
 
 void SyncEngine::insertLatencySample(int64_t offsetUs, int64_t maxErrorUs,
                                      int64_t nowUs) {
+  std::lock_guard<std::mutex> lock(clockMutex_);
   timeFilter_.insert(offsetUs, maxErrorUs, nowUs);
 }
 
 bool SyncEngine::latencyReady() const {
+  std::lock_guard<std::mutex> lock(clockMutex_);
   return timeFilter_.isFull(kLatencyFilterFull);
+}
+
+int64_t SyncEngine::offsetAt(int64_t nowUs) const {
+  std::lock_guard<std::mutex> lock(clockMutex_);
+  return timeFilter_.offsetAt(nowUs);
 }
 
 void SyncEngine::onPlaybackGap() {
@@ -39,17 +46,15 @@ void SyncEngine::onPlaybackGap() {
   miniMedian_.clear();
 }
 
-void SyncEngine::reset() {
-  playing_ = false;
-  shortMedian_.clear();
-  miniMedian_.clear();
+void SyncEngine::resetClock() {
+  std::lock_guard<std::mutex> lock(clockMutex_);
   timeFilter_.reset();
 }
 
 SyncResult SyncEngine::evaluate(int64_t chunkServerTimeUs, int64_t nowUs,
                                 int32_t dacLatencyUs, int64_t minLockLeadUs,
                                 int64_t outputDriftUs) {
-  const int64_t diffToServer = timeFilter_.offsetAt(nowUs);
+  const int64_t diffToServer = offsetAt(nowUs);
   const int64_t serverNowUs = nowUs + diffToServer;
   const int64_t bufferUs = int64_t{bufferMs_} * 1000;
 

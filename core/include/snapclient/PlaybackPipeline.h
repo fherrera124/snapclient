@@ -22,9 +22,10 @@
 
 namespace snapclient {
 
-// The five onXxx methods run on SnapcastClient's own thread; consumeOnce()
-// runs on the caller's - plain reads/writes across that boundary, no
-// synchronization.
+// The five onXxx methods run on SnapcastClient's thread, applyDspSettings()
+// and setDownmixMono() on any, and consumeOnce() on the output's. Besides
+// the queues, SyncEngine's clock and the DSP, which are shared, the other
+// threads only leave changes for consumeOnce() to apply on its own.
 class PlaybackPipeline {
  public:
   PlaybackPipeline(SnapcastClient& client, AudioSink& audioSink,
@@ -50,6 +51,23 @@ class PlaybackPipeline {
     DecodedChunk chunk;
     size_t framesConsumed = 0;
   };
+
+  struct CodecChange {
+    Codec codec = Codec::None;
+    bell::audio::Format format;
+    uint32_t samplesPerChunk = 0;
+  };
+
+  // Only the latest of each kind matters.
+  struct PendingChanges {
+    bool reconnected = false;
+    std::optional<ServerSettings> settings;
+    std::optional<CodecChange> codec;
+  };
+
+  void applyPendingChanges();
+  void applyCodec(const CodecChange& change);
+  void applySettings(const ServerSettings& s);
 
   // Runs FrameSplicer on pcm[0..len) into scratchResampled_, returns
   // the resulting frame count.
@@ -99,7 +117,7 @@ class PlaybackPipeline {
 
   SyncEngine sync_;
   DspProcessor dsp_;
-  // Guards the two below and routeEq().
+  // Guards the two below and every call that changes dsp_.
   std::mutex dspMutex_;
   DspFlow dspFlow_ = DspFlow::Stereo;
   DspFilterParams dspParams_;
@@ -108,20 +126,27 @@ class PlaybackPipeline {
   BoundedQueue<QueuedChunk> queue_;
   BoundedQueue<DecodedChunk> pcmQueue_;
   std::atomic<uint32_t> codecGeneration_{0};
-  // Raw Hz value of sampleRate_ below, for the consumer's thread.
-  std::atomic<uint32_t> sampleRateHz_{44100};
-  // Best known samples-per-chunk: seeded in onCodecReady(), refined by
+  // Best known samples-per-chunk: seeded from each codec header, refined by
   // DecoderTask from real decoded sizes.
   std::atomic<uint32_t> samplesPerChunkHint_{kOpusSamplesPerChunk};
-  // What audioSink_/queue_ were last sized for; consumeOnce() re-applies
-  // both when samplesPerChunkHint_ moves off it.
-  std::atomic<uint32_t> appliedChunkFrames_{kOpusSamplesPerChunk};
   // Declared before decoder_: DecoderTask binds it and starts running
   // from its own constructor.
   DecoderTask decoder_;
   SnapcastClient& client_;
 
-  bell::audio::SampleRate sampleRate_ = bell::audio::SampleRate::SR_44100HZ;
+  // Guards pending_.
+  std::mutex pendingMutex_;
+  PendingChanges pending_;
+
+  // Only onAudioChunk() touches these two.
+  size_t queueFullDrops_ = 0;
+  RateLimiter queueFullLogLimiter_;
+
+  // The rest belongs to consumeOnce()'s thread.
+  uint32_t sampleRateHz_ = 44100;
+  // What audioSink_/queue_ were last sized for; consumeOnce() re-applies
+  // both when samplesPerChunkHint_ moves off it.
+  uint32_t appliedChunkFrames_ = kOpusSamplesPerChunk;
   int32_t bufferMs_ = 0;
   // Snapcast's per-client "latency" setting, which nothing on this end
   // can measure directly.
@@ -134,8 +159,6 @@ class PlaybackPipeline {
   bool lastMuted_ = false;
   int64_t settingsLogDueUs_ = 0;
 
-  size_t queueFullDrops_ = 0;
-  RateLimiter queueFullLogLimiter_;
   size_t starvedPolls_ = 0;
   int64_t starvedSinceUs_ = 0;
   RateLimiter starvationLogLimiter_;

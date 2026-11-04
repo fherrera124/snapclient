@@ -5,6 +5,7 @@
 #include <cmath>
 #include <new>
 #include <thread>
+#include <utility>
 
 #include <bell/Logger.h>
 
@@ -95,12 +96,50 @@ void PlaybackPipeline::routeEq() {
 }
 
 void PlaybackPipeline::setDownmixMono(bool downmix) {
+  std::lock_guard<std::mutex> lock(dspMutex_);
   dsp_.setDownmixMono(downmix);
 }
 
-void PlaybackPipeline::onConnected() { sync_.reset(); }
+void PlaybackPipeline::onConnected() {
+  sync_.resetClock();
+  std::lock_guard<std::mutex> lock(pendingMutex_);
+  pending_.reconnected = true;
+}
 
 void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
+  std::lock_guard<std::mutex> lock(pendingMutex_);
+  pending_.settings = s;
+}
+
+void PlaybackPipeline::onCodecReady(Codec codec,
+                                    const bell::audio::Format& fmt) {
+  // Must happen before the next onAudioChunk(), so no old chunk reaches the
+  // new decoder.
+  codecGeneration_.fetch_add(1, std::memory_order_relaxed);
+  queue_.clear();
+  std::lock_guard<std::mutex> lock(pendingMutex_);
+  pending_.codec =
+      CodecChange{codec, fmt, client_.expectedSamplesPerChunk()};
+}
+
+void PlaybackPipeline::applyPendingChanges() {
+  PendingChanges changes;
+  {
+    std::lock_guard<std::mutex> lock(pendingMutex_);
+    changes = std::exchange(pending_, PendingChanges{});
+  }
+  if (changes.reconnected) {
+    sync_.onPlaybackGap();
+  }
+  if (changes.codec) {
+    applyCodec(*changes.codec);
+  }
+  if (changes.settings) {
+    applySettings(*changes.settings);
+  }
+}
+
+void PlaybackPipeline::applySettings(const ServerSettings& s) {
   bufferMs_ = s.bufferMs;
   dacFixedLatencyMs_ = s.latencyMs;
 
@@ -109,31 +148,35 @@ void PlaybackPipeline::onServerSettings(const ServerSettings& s) {
   if (syncChanged) {
     lastSyncBufferMs_ = bufferMs_;
     lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
-    sync_.onSettingsChanged(bufferMs_, static_cast<uint32_t>(sampleRate_));
+    sync_.onSettingsChanged(bufferMs_, sampleRateHz_);
     applyQueueCapacity();
   }
   if (syncChanged || s.volume != lastVolume_ || s.muted != lastMuted_) {
     lastVolume_ = s.volume;
     lastMuted_ = s.muted;
-    // Runs on SnapcastClient's network task, where a blocking write
-    // delays chunk reception.
     settingsLogDueUs_ = nowUs() + kSettingsLogSettleUs;
   }
   const float volume = static_cast<float>(s.volume) / 100.0f;
-  dsp_.setVolume(audioSink_.setVolume(volume) ? 1.0f : volume);
+  const bool volumeInSink = audioSink_.setVolume(volume);
+  {
+    std::lock_guard<std::mutex> lock(dspMutex_);
+    dsp_.setVolume(volumeInSink ? 1.0f : volume);
+  }
   audioSink_.setMuted(s.muted);
 }
 
-void PlaybackPipeline::onCodecReady(Codec codec,
-                                    const bell::audio::Format& fmt) {
-  sampleRate_ = fmt.getSampleRate();
-  sampleRateHz_.store(fmt.getSampleRateValue(), std::memory_order_relaxed);
-  const uint32_t expectedSamplesPerChunk = client_.expectedSamplesPerChunk();
+void PlaybackPipeline::applyCodec(const CodecChange& change) {
+  // Before configureChunkPool(), which won't resize while slots are out.
+  pcmQueue_.clear();
+  pendingChunk_.reset();
+
+  const uint32_t sampleRate = change.format.getSampleRateValue();
+  const uint32_t expectedSamplesPerChunk = change.samplesPerChunk;
+  sampleRateHz_ = sampleRate;
   samplesPerChunkHint_.store(expectedSamplesPerChunk,
                              std::memory_order_relaxed);
-  appliedChunkFrames_.store(expectedSamplesPerChunk,
-                            std::memory_order_relaxed);
-  audioSink_.configure(fmt.getSampleRateValue(), expectedSamplesPerChunk);
+  appliedChunkFrames_ = expectedSamplesPerChunk;
+  audioSink_.configure(sampleRate, expectedSamplesPerChunk);
   routeEq();
   // Reserved once so prepareForOutput()'s resize() never allocates on the
   // audio path; +8 covers frameAdjustment's per-chunk swing.
@@ -148,25 +191,17 @@ void PlaybackPipeline::onCodecReady(Codec codec,
            tiers.psram, tiers.iram, tiers.dram);
   lastSyncBufferMs_ = bufferMs_;
   lastSyncDacLatencyMs_ = dacFixedLatencyMs_;
-  sync_.onSettingsChanged(bufferMs_, fmt.getSampleRateValue());
+  sync_.onSettingsChanged(bufferMs_, sampleRate);
   applyQueueCapacity();
-  // Queued chunks predate this codec header and would otherwise decode
-  // against the *new* decoder instance setupDecode() just recreated in
-  // SnapcastClient - bump codecGeneration first so DecoderTask can also
-  // recognize and drop anything already popped but not yet
-  // decoded/published.
-  codecGeneration_.fetch_add(1, std::memory_order_relaxed);
-  queue_.clear();
-  pcmQueue_.clear();
-  pendingChunk_.reset();
   BELL_LOG(info, logTag_, "codec ready: {} {} Hz, {}-bit, {} ch",
-           codecName(codec), fmt.getSampleRateValue(),
-           bell::audio::getSampleSizeInBytes(fmt.getSampleFormat()) * 8,
-           fmt.getNumChannels());
+           codecName(change.codec), sampleRate,
+           bell::audio::getSampleSizeInBytes(change.format.getSampleFormat()) *
+               8,
+           change.format.getNumChannels());
 }
 
 void PlaybackPipeline::applyQueueCapacity() {
-  const uint32_t sr = sampleRateHz_.load(std::memory_order_relaxed);
+  const uint32_t sr = sampleRateHz_;
   if (bufferMs_ <= 0 || sr == 0) {
     return;
   }
@@ -264,8 +299,7 @@ size_t PlaybackPipeline::output(size_t frames, bool preload) {
 void PlaybackPipeline::processBlock(const int16_t* in, size_t frames) {
   try {
     dsp_.process(in, scratchOutput_.data(), frames,
-                 static_cast<bell::audio::SampleRate>(
-                     sampleRateHz_.load(std::memory_order_relaxed)));
+                 static_cast<bell::audio::SampleRate>(sampleRateHz_));
   } catch (const std::bad_alloc&) {
     // Playing without the DSP beats losing the device to a slot the engine
     // could not size.
@@ -282,7 +316,7 @@ void PlaybackPipeline::processBlock(const int16_t* in, size_t frames) {
 // lockOntoChunk() must preload the whole ring before its armed deadline,
 // and decode runs near real time - hence the ring duration plus margin.
 int64_t PlaybackPipeline::minLockLeadUs() const {
-  const uint32_t sr = sampleRateHz_.load(std::memory_order_relaxed);
+  const uint32_t sr = sampleRateHz_;
   if (sr == 0) {
     return 0;
   }
@@ -339,17 +373,17 @@ void PlaybackPipeline::flushSettingsLog() {
 }
 
 void PlaybackPipeline::consumeOnce() {
+  applyPendingChanges();
   flushSettingsLog();
-  // Re-size both once DecoderTask reports a chunk size onCodecReady() did
+  // Re-size both once DecoderTask reports a chunk size applyCodec() did
   // not have. Guarded because applyQueueCapacity() is not a no-op.
   const uint32_t samplesPerChunk =
       samplesPerChunkHint_.load(std::memory_order_relaxed);
-  if (samplesPerChunk != appliedChunkFrames_.load(std::memory_order_relaxed)) {
-    audioSink_.configure(sampleRateHz_.load(std::memory_order_relaxed),
-                         samplesPerChunk);
+  if (samplesPerChunk != appliedChunkFrames_) {
+    audioSink_.configure(sampleRateHz_, samplesPerChunk);
     routeEq();
     applyQueueCapacity();
-    appliedChunkFrames_.store(samplesPerChunk, std::memory_order_relaxed);
+    appliedChunkFrames_ = samplesPerChunk;
   }
 
   DecodedChunk item;
@@ -392,8 +426,7 @@ void PlaybackPipeline::consumeOnce() {
   // both of these a no-op slice.
   const int64_t itemServerTimeUs =
       item.serverTimeUs +
-      static_cast<int64_t>(offsetFrames) * 1'000'000LL /
-          sampleRateHz_.load(std::memory_order_relaxed);
+      static_cast<int64_t>(offsetFrames) * 1'000'000LL / sampleRateHz_;
   const std::byte* pcm = item.dataAt(offsetFrames);
   const size_t pcmLen = (item.frames() - offsetFrames) * kBytesPerFrame;
 

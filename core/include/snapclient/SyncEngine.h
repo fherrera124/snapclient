@@ -1,8 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 
 #include "snapclient/SlidingMedian.h"
 #include "snapclient/TimeFilter.h"
@@ -31,6 +33,8 @@ struct SyncResult {
 // Decides when a chunk should play and by how much to nudge playback to
 // stay in sync with the server clock. Hardware-agnostic: the caller owns
 // the actual audio output and reports back how many frames it wrote.
+// insertLatencySample(), latencyReady(), resetClock() and isPlaying() may
+// run on any thread; everything else belongs to one.
 class SyncEngine {
  public:
   SyncEngine();
@@ -67,13 +71,14 @@ class SyncEngine {
   // virtual playback clock instead of 0.
   void lockWithPreloadedFrames(size_t preloadedFrames, int64_t nowUs);
 
-  void reset();
+  // Forgets the clock estimate, for a new connection.
+  void resetClock();
   // Leaves the clock estimate alone - only playback position is lost.
   void onPlaybackGap();
 
   // True once evaluate() has found a chunk to start from and hasn't since
   // fallen back to resyncing (queue starvation or a hard resync).
-  bool isPlaying() const { return playing_; }
+  bool isPlaying() const { return playing_.load(std::memory_order_relaxed); }
 
  private:
   static constexpr uint32_t kLatencyFilterFull = 29;
@@ -85,7 +90,10 @@ class SyncEngine {
   // medians aren't full. Fixed magnitude.
   int steadyStateFrameAdjustment(int64_t shortM, int64_t miniM,
                                  int64_t age) const;
+  int64_t offsetAt(int64_t nowUs) const;
 
+  // Guards timeFilter_.
+  mutable std::mutex clockMutex_;
   TimeFilter timeFilter_;
   SlidingMedian<int64_t> shortMedian_;
   SlidingMedian<int64_t> miniMedian_;
@@ -93,7 +101,7 @@ class SyncEngine {
   int32_t bufferMs_ = 0;
   uint32_t sampleRate_ = 44100;
 
-  bool playing_ = false;
+  std::atomic<bool> playing_{false};
   int64_t playbackStartTimeUs_ = 0;
   int64_t samplesWritten_ = 0;
 };

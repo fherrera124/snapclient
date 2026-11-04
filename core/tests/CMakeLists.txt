@@ -24,3 +24,6 @@ target_link_libraries(dsp_processor_test PRIVATE snapclient_core)
 
 add_executable(bounded_queue_test bounded_queue_test.cpp)
 target_link_libraries(bounded_queue_test PRIVATE snapclient_core)
+
+add_executable(playback_pipeline_test playback_pipeline_test.cpp)
+target_link_libraries(playback_pipeline_test PRIVATE snapclient_core)
