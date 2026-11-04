@@ -33,3 +33,6 @@ target_link_libraries(time_filter_test PRIVATE snapclient_core)
 
 add_executable(protocol_test protocol_test.cpp)
 target_link_libraries(protocol_test PRIVATE snapclient_core)
+
+add_executable(snapcast_client_test snapcast_client_test.cpp)
+target_link_libraries(snapcast_client_test PRIVATE snapclient_core)

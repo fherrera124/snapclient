@@ -119,21 +119,6 @@ class SnapclientTask : public bell::Task {
     };
     applyUdpLogSettings();
 
-    // Null until client exists below - safe since this lambda only
-    // dereferences it once a real HTTP request arrives, long after that.
-    std::unique_ptr<snapclient::PlaybackPipeline> pipeline;
-    control.onSettingsChanged = [&] {
-      pipeline->applyDspSettings(settings.activeFlow(),
-                                 settings.flowParams(settings.activeFlow()));
-      applyUdpLogSettings();
-    };
-
-    auto controlListenRes = control.listen(CONFIG_SNAPCLIENT_WEB_PORT);
-    if (!controlListenRes) {
-      BELL_LOG(error, kLogTag, "control server listen failed: {}",
-               controlListenRes.error().message());
-    }
-
     snapclient::SnapcastClient::Config config;
     if (!settings.serverHost().empty()) {
       config.host = settings.serverHost();
@@ -151,23 +136,6 @@ class SnapclientTask : public bell::Task {
       std::snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       config.mac = macStr;
-    }
-
-    // Advertising a port nothing is bound to is worse than not advertising.
-    // advertise() also sets the device-wide mDNS hostname, so the board
-    // answers to <clientName>.local. A later hostname change needs a reboot.
-    std::unique_ptr<bell::mdns::Advertiser> httpAdvertiser;
-    if (controlListenRes) {
-      auto advertiseRes = bell::mdns::getDefaultManager()->advertise(
-          config.clientName, "_http._tcp", "", "", CONFIG_SNAPCLIENT_WEB_PORT);
-      if (advertiseRes) {
-        httpAdvertiser = std::move(*advertiseRes);
-        BELL_LOG(info, kLogTag, "advertising http at {}.local:{}",
-                 config.clientName, CONFIG_SNAPCLIENT_WEB_PORT);
-      } else {
-        BELL_LOG(warn, kLogTag, "mdns advertise failed: {}",
-                 advertiseRes.error().message());
-      }
     }
 
     if (!networkHasIp()) {
@@ -193,7 +161,7 @@ class SnapclientTask : public bell::Task {
     snapclient::AudioSinkI2S i2sSink(buildSinkConfig(), dac);
     snapclient::GptimerWaiter waiter;
 
-    pipeline = std::make_unique<snapclient::PlaybackPipeline>(
+    auto pipeline = std::make_unique<snapclient::PlaybackPipeline>(
         client, i2sSink, waiter, kLogTag);
 #ifdef CONFIG_SNAPCLIENT_I2S_DOWNMIX_MONO
     pipeline->setDownmixMono(true);
@@ -219,8 +187,38 @@ class SnapclientTask : public bell::Task {
       pipeline->onAudioChunk(codec, std::move(payload), serverTimeUs);
     };
 
+    control.onSettingsChanged = [&] {
+      pipeline->applyDspSettings(settings.activeFlow(),
+                                 settings.flowParams(settings.activeFlow()));
+      applyUdpLogSettings();
+    };
+
+    auto controlListenRes = control.listen(CONFIG_SNAPCLIENT_WEB_PORT);
+    if (!controlListenRes) {
+      BELL_LOG(error, kLogTag, "control server listen failed: {}",
+               controlListenRes.error().message());
+    }
+
+    // Advertising a port nothing is bound to is worse than not advertising.
+    // advertise() also sets the device-wide mDNS hostname, so the board
+    // answers to <clientName>.local. A later hostname change needs a reboot.
+    std::unique_ptr<bell::mdns::Advertiser> httpAdvertiser;
+    if (controlListenRes) {
+      auto advertiseRes = bell::mdns::getDefaultManager()->advertise(
+          config.clientName, "_http._tcp", "", "", CONFIG_SNAPCLIENT_WEB_PORT);
+      if (advertiseRes) {
+        httpAdvertiser = std::move(*advertiseRes);
+        BELL_LOG(info, kLogTag, "advertising http at {}.local:{}",
+                 config.clientName, CONFIG_SNAPCLIENT_WEB_PORT);
+      } else {
+        BELL_LOG(warn, kLogTag, "mdns advertise failed: {}",
+                 advertiseRes.error().message());
+      }
+    }
+
     BELL_LOG(info, kLogTag, "connecting to {}:{}...", config.host,
              config.port);
+    client.start();
 
     while (true) {
       pipeline->consumeOnce();

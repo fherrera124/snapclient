@@ -54,13 +54,13 @@ std::optional<bell::audio::SampleRate> toSampleRate(uint32_t hz) {
 SnapcastClient::SnapcastClient(Config config)
     : bell::Task("snapcast_client", 6 * 1024, /*espPriority=*/4,
                 bell::TaskCore::CoreAny, /*espStackOnPsram=*/false),
-      config_(std::move(config)) {
-  startTask();
-}
+      config_(std::move(config)) {}
 
 SnapcastClient::~SnapcastClient() {
   stopTask();
 }
+
+void SnapcastClient::start() { startTask(); }
 
 void SnapcastClient::setPingIntervalUs(int64_t intervalUs) {
   pingIntervalUs_ = intervalUs;

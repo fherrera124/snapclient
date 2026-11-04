@@ -51,6 +51,9 @@ class SnapcastClient : public bell::Task {
   explicit SnapcastClient(Config config);
   ~SnapcastClient() override;
 
+  // Connects from its own task. The callbacks below must be set first.
+  void start();
+
   // Fires after every successful connect (including reconnects) - the
   // server-clock relationship (TimeFilter's samples, drift estimate) from
   // any previous connection is no longer valid and should be reset.
